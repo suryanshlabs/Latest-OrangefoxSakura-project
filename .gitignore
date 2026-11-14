@@ -1,0 +1,17 @@
+# Downloaded reference artifacts, unpacked binaries and build output.
+# The 46.5 MB R11.0_5 release ZIP must never be committed: download it with
+# build/fetch_reference.sh instead (checksum-verified in documentation/).
+reference/
+*.zip
+*.img
+*.gz-dtb
+!documentation/**/*.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Local build trees / logs
+out/
+*.log
+.env

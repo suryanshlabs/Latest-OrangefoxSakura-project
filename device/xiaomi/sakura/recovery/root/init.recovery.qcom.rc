@@ -1,0 +1,36 @@
+#
+# init.recovery.qcom.rc — sakura (MSM8953) recovery init
+#
+# R11.0_5 brought up crypto manually (sbinqseecomd + prepdecrypt + explicit
+# keymaster/gatekeeper services). R12 ships the qcom_decrypt framework, which
+# provides its own init fragment; this file keeps the R11 hardware bring-up
+# (bootdevice symlink, health HAL) and imports the R12 fragment.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+on fs
+    # The boot cmdline carries androidboot.bootdevice=7824900.sdhci; every
+    # by-name path in fstab/twrp.flags depends on this symlink existing.
+    wait /dev/block/platform/soc/${ro.boot.bootdevice}
+    symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
+
+    # QSEECom channel permissions needed before keymaster/gatekeeper start
+    chmod 0660 /dev/qseecom
+    chown system drmrpc /dev/qseecom
+    chmod 0664 /dev/ion
+    chown system system /dev/ion
+    install_keyring
+
+on boot
+    start health-hal-2-0
+
+on init
+    setprop prepdecrypt.loglevel 2
+    # R11 explicitly kept SELinux permissive for recovery; the boot cmdline
+    # also sets androidboot.selinux=permissive.
+    setprop sys.usb.config adb
+
+# qcom_decrypt (FDE) and qcom_decrypt_fbe (FBE) services/actions.
+# Provided by the OrangeFox vendor/recovery tree.
+import /init.recovery.qcom_decrypt.rc

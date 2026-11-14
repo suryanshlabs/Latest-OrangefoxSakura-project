@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Local manifest for an OrangeFox R12.0 (fox_12.1) build for sakura.
+
+  Use AFTER syncing the official minimal manifest, because repo needs its
+  .repo directory to exist:
+
+    ./build/sync.sh
+
+  This file pins the device-side projects only. The OrangeFox recovery and
+  vendor trees are cloned separately by build/sync.sh (that is what the
+  official orangefox_sync.sh does too, because vendor/twrp must be patched).
+-->
+<manifest>
+  <!-- Device tree: this repository -->
+  <remote name="sakura-local" fetch=".." review="sakura" />
+
+  <project name="device/xiaomi/sakura"
+           path="device/xiaomi/sakura"
+           remote="sakura-local"
+           revision="HEAD" />
+
+  <!--
+    Kernel source, only needed if you rebuild the kernel instead of using
+    prebuilt/Image.gz-dtb (see device/xiaomi/sakura/prebuilt/README.md).
+
+  <remote name="gh" fetch="https://github.com" />
+  <project name="msm8953E/kernel_xiaomi_msm8953"
+           path="kernel/xiaomi/msm8953"
+           remote="gh"
+           revision="52b67cb32ac009d366b632221d5fd381b6b7b55c" />
+  -->
+</manifest>

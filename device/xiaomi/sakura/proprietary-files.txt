@@ -1,0 +1,42 @@
+# proprietary-files.txt — recovery-only QTI crypto blobs for sakura
+#
+# *** PROVENANCE WARNING — VERIFY BEFORE RELEASE ***
+# The community tree this list was derived from (msm8953E/device_xiaomi_sakura_twrp
+# @ ofx-12.1) states in its own header that these blobs come from
+#     daisy-user 10 QKQ1.191002.002 V11.0.21.0.QDLMIXM release-keys
+# i.e. from the Mi A2 Lite (daisy), NOT from sakura. Same SoC family, same
+# ro.hardware.keystore=msm8953 backend, so they are very likely ABI-compatible,
+# but that is an ASSUMPTION. Replace them with blobs extracted from a sakura
+# Android 9 stock image (V12.0.x.x.PDI*) and record the SHA-1 here.
+# Procedure: documentation/DEPENDENCIES.md §4.
+#
+# Format:  <source path in vendor image>:<destination in recovery root>|<sha1>
+#
+# These are Xiaomi/Qualcomm proprietary binaries. They are NOT redistributed by
+# this repository; extract them from your own device/stock image.
+
+# --- TEE / keymaster / gatekeeper services ---------------------------------
+vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti:recovery/root/sbin/android.hardware.gatekeeper@1.0-service-qti
+vendor/bin/hw/android.hardware.keymaster@3.0-service-qti:recovery/root/sbin/android.hardware.keymaster@3.0-service-qti
+vendor/bin/qseecomd:recovery/root/sbin/qseecomd
+
+# --- HAL implementations ---------------------------------------------------
+vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so:recovery/root/vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so
+vendor/lib64/hw/android.hardware.keymaster@3.0-impl-qti.so:recovery/root/vendor/lib64/hw/android.hardware.keymaster@3.0-impl-qti.so
+vendor/lib64/hw/gatekeeper.msm8953.so:recovery/root/vendor/lib64/hw/gatekeeper.msm8953.so
+vendor/lib64/hw/keystore.msm8953.so:recovery/root/vendor/lib64/hw/keystore.msm8953.so
+
+# --- QTI support chain required by the HALs above --------------------------
+vendor/lib64/libQSEEComAPI.so:recovery/root/vendor/lib64/libQSEEComAPI.so
+vendor/lib64/libGPreqcancel.so:recovery/root/vendor/lib64/libGPreqcancel.so
+vendor/lib64/libGPreqcancel_svc.so:recovery/root/vendor/lib64/libGPreqcancel_svc.so
+vendor/lib64/libSecureUILib.so:recovery/root/vendor/lib64/libSecureUILib.so
+vendor/lib64/libStDrvInt.so:recovery/root/vendor/lib64/libStDrvInt.so
+vendor/lib64/libdiag.so:recovery/root/vendor/lib64/libdiag.so
+vendor/lib64/libdrmfs.so:recovery/root/vendor/lib64/libdrmfs.so
+vendor/lib64/libdrmtime.so:recovery/root/vendor/lib64/libdrmtime.so
+vendor/lib64/libkeymasterdeviceutils.so:recovery/root/vendor/lib64/libkeymasterdeviceutils.so
+vendor/lib64/libqisl.so:recovery/root/vendor/lib64/libqisl.so
+vendor/lib64/librpmb.so:recovery/root/vendor/lib64/librpmb.so
+vendor/lib64/libssd.so:recovery/root/vendor/lib64/libssd.so
+vendor/lib64/libtime_genoff.so:recovery/root/vendor/lib64/libtime_genoff.so
