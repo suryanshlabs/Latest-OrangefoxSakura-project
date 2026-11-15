@@ -347,9 +347,9 @@ jobs:
           # NOTE: sourced directly (never through a pipe - a pipeline would run
           # envsetup.sh in a subshell and lunch() would vanish).
           if [ -f build/envsetup.sh ]; then
-            . build/envsetup.sh >> "$LOG" 2>&1; ES=$?
+            . build/envsetup.sh > "$WORKSPACE/envsetup_out.log" 2> "$WORKSPACE/envsetup_err.log"; ES=$?
           elif [ -f build/make/envsetup.sh ]; then
-            . build/make/envsetup.sh >> "$LOG" 2>&1; ES=$?
+            . build/make/envsetup.sh > "$WORKSPACE/envsetup_out.log" 2> "$WORKSPACE/envsetup_err.log"; ES=$?
           else
             say "=== build/ contents ==="
             ls build 2>&1 | head -40 | tee -a "$LOG"
@@ -357,6 +357,44 @@ jobs:
             exit 1
           fi
           say "envsetup.sh exit status: $ES"
+          if [ "$ES" != 0 ]; then
+            say "=== envsetup.sh failed; dumping diagnostic evidence ==="
+            say "--- last 60 lines of build.log (around envsetup sourcing) ---"
+            tail -60 "$LOG" | tee -a "$LOG"
+            say "--- envsetup.sh stdout (envsetup_out.log, last 80 lines) ---"
+            if [ -f "$WORKSPACE/envsetup_out.log" ]; then
+              tail -80 "$WORKSPACE/envsetup_out.log" | tee -a "$LOG"
+            else
+              say "(no envsetup_out.log)"
+            fi
+            say "--- envsetup.sh stderr (envsetup_err.log, full) ---"
+            if [ -f "$WORKSPACE/envsetup_err.log" ]; then
+              say "[envsetup_err.log size: $(wc -c 2>/dev/null < "$WORKSPACE/envsetup_err.log") bytes]"
+              cat "$WORKSPACE/envsetup_err.log" | tee -a "$LOG"
+            else
+              say "(no envsetup_err.log)"
+            fi
+            say "--- minimal environment snapshot ---"
+            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+            echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
+            echo "which java: $(which java 2>/dev/null || echo NOT FOUND)"
+            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+              "$JAVA_HOME/bin/java" -version 2>&1 | head -1
+            else
+              say "java: not usable from JAVA_HOME"
+            fi
+            echo "repo version: $(repo version 2>&1 | head -1)"
+            echo "python3: $(python3 --version 2>&1)"
+            echo "uname: $(uname -a)"
+            echo "df -BG . :"
+            df -BG . 2>&1 | tail -3 | tee -a "$LOG"
+            echo "free -h :"
+            free -h 2>&1 | tail -3 | tee -a "$LOG"
+            echo "TOP=${TOP:-<unset>}"
+            echo "ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
+            echo "BUILD_TOP=${BUILD_TOP:-<unset>}"
+            say "--- now attempting lunch anyway ---"
+          fi
           tail -40 "$LOG"
           if ! command -v lunch >/dev/null; then
             say "=== build/make contents ==="
@@ -382,6 +420,7 @@ jobs:
             [ "$J" -gt 8 ] && J=8
           fi
           echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
+          export WORKSPACE="$GITHUB_WORKSPACE"
 
           say "=== populating OrangeFox theme into recovery/root/twres ==="
           THEME_SRC="bootable/recovery/gui/theme"
