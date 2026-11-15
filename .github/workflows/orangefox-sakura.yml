@@ -96,8 +96,9 @@ jobs:
           swapon --show || echo "no swap"
           cat /proc/swaps
 
-          echo "=== disk ==="
-          df -h; echo; df -i
+          echo "=== disk (top-level mounts only) ==="
+          df -h --output=source,size,used,avail,pcent,target 2>/dev/null \
+            | grep -vE '/run/user|/run/qemu|/sys/firmware|/dev/shm' || df -h
           TARGET_PARENT="$(dirname "$SRC")"
           mkdir -p "$TARGET_PARENT" 2>/dev/null || true
           DISK_GB=$(df -BG --output=avail "$TARGET_PARENT" 2>/dev/null | tail -1 | tr -dc '0-9')
@@ -142,10 +143,69 @@ jobs:
           [ "$SUDO" = yes ] || echo "::warning::No passwordless sudo: dependency installation will be skipped. Install the packages in documentation/DEPENDENCIES.md manually."
           exit $fail
 
+  # Fail here in ~30s instead of after a multi-hour sync: a 12.1 Soong build
+  # hard-requires OpenJDK 11 and the core toolchain, and this rented host is
+  # oversubscribed (loadavg ~900) so wasted runs are expensive.
+  preflight:
+    name: Toolchain preflight
+    needs: environment
+    if: ${{ inputs.mode == 'build' }}
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Report privileges
+        shell: bash
+        run: |
+          set -uo pipefail
+          if sudo -n true 2>/dev/null; then echo "passwordless sudo: yes"; else echo "passwordless sudo: no"; fi
+          echo "user=$(id -un) home=$HOME"
+          echo "loadavg=$(cat /proc/loadavg)"
+
+      - name: Require JDK 11
+        shell: bash
+        run: |
+          set -uo pipefail
+          have_jdk11() { java -version 2>&1 | grep -q 'version "11'; }
+          if have_jdk11; then echo "JDK 11 already present: $(java -version 2>&1 | head -1)"; exit 0; fi
+          echo "JDK 11 missing; current: $(java -version 2>&1 | head -1 || echo none)"
+          if sudo -n true 2>/dev/null; then
+            sudo apt-get update -qq || true
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends openjdk-11-jdk || true
+          fi
+          if ! have_jdk11; then
+            echo "::error::OpenJDK 11 is required by the Android 12.1 Soong bootstrap and could not be installed (no passwordless sudo?). Install it on the runner, then re-run."
+            exit 1
+          fi
+
+      - name: Require core build packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          CMDS="git curl python3 rsync unzip zip bc bison flex gcc g++ make ccache cpio lz4"
+          missing() { for c in $CMDS; do command -v "$c" >/dev/null || echo "$c"; done; }
+          M="$(missing)"
+          if [ -n "$M" ]; then
+            echo "missing tools: $M"
+            if sudo -n true 2>/dev/null; then
+              sudo apt-get update -qq || true
+              # Best effort: some names differ across Ubuntu releases (t64 transition).
+              DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+                git curl python3 rsync unzip zip bc bison build-essential ccache flex \
+                g++-multilib gcc-multilib libssl-dev zlib1g-dev libelf-dev liblz4-tool \
+                lzop pngcrush schedtool xsltproc cpio lz4 android-sdk-libsparse-utils || true
+            fi
+            N="$(missing)"
+            if [ -n "$N" ]; then
+              echo "::error::Missing build tools: $N. Install them on the runner (needs sudo) and re-run."
+              exit 1
+            fi
+          fi
+          echo "core toolchain OK"
+
   build:
     # NOTE: env context is NOT available in jobs.<id>.name, so no ${{ env.* }} here.
     name: Sync and build OrangeFox sakura
-    needs: environment
+    needs: [environment, preflight]
     if: ${{ inputs.mode == 'build' }}
     runs-on: [self-hosted, Linux, X64]
     # Generous: a cold 45GB sync on a shared box can take hours.
@@ -158,23 +218,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build dependencies (best effort, no secrets)
+      - name: Install extra dependencies (best effort)
         shell: bash
         run: |
           set -uo pipefail
           if [ '${{ needs.environment.outputs.have_sudo }}' != yes ]; then
-            echo "Skipping apt: no passwordless sudo. See documentation/DEPENDENCIES.md."
+            echo "Skipping apt extras: no passwordless sudo (core toolchain already verified)."
             exit 0
           fi
-          sudo apt-get update -qq || true
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            git curl python3 python3-pip rsync unzip zip bc bison build-essential ccache \
-            flex g++-multilib gcc-multilib gnupg gperf imagemagick lib32z1-dev libelf-dev \
-            liblz4-tool libncurses5 libncurses5-dev libssl-dev libxml2 libxml2-utils \
-            lzop pngcrush schedtool squashfs-tools xsltproc zlib1g-dev openjdk-11-jdk \
-            cpio lz4 android-sdk-libsparse-utils 2>&1 | tail -20 || true
-          # OpenJDK 11 is required by the Android 12.1 Soong bootstrap.
-          java -version 2>&1 | head -2
+          sudo apt-get install -y --no-install-recommends \
+            libxml2 libxml2-utils imagemagick gnupg gperf \
+            lib32z1-dev squashfs-tools libncurses5-dev 2>&1 | tail -10 || true
 
       - name: Ensure repo tool
         shell: bash
