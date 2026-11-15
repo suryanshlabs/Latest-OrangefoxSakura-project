@@ -336,20 +336,38 @@ jobs:
           # Everything here is also written to build.log, which the artifact
           # step uploads - the step's own console log is too long to read back.
           LOG="$GITHUB_WORKSPACE/build.log"
-          : > "$LOG"
           say() { echo "$@" | tee -a "$LOG"; }
 
           say "=== pwd: $(pwd) ==="
+          say "=== build step paths (for diagnostics) ==="
+          say "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-<unset>}"
+          say "PWD=$(pwd)"
+          say "SRC=${SRC:-<unset>}"
+          say "LOG=${LOG}"
+          say ": > \"$LOG\""
+          : > "$LOG"
+          say "LOG recreated; size now $(wc -c < "$LOG") bytes"
+
           say "=== top level ==="
           ls -1 2>&1 | head -20 | tee -a "$LOG"
           say "=== build/ layout ==="
           ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5 | tee -a "$LOG"
+
+          # Helper log files are written beside build.log so the dump step can
+          # always find them even when $WORKSPACE is set later or differs from
+          # the directory we are building in.
+          HelperDir="$(dirname "$LOG")"
+          ENV_OUT="$HelperDir/envsetup_out.log"
+          ENV_ERR="$HelperDir/envsetup_err.log"
+          : > "$ENV_OUT"
+          : > "$ENV_ERR"
+
           # NOTE: sourced directly (never through a pipe - a pipeline would run
           # envsetup.sh in a subshell and lunch() would vanish).
           if [ -f build/envsetup.sh ]; then
-            . build/envsetup.sh >> "$LOG" 2>&1; ES=$?
+            . build/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
           elif [ -f build/make/envsetup.sh ]; then
-            . build/make/envsetup.sh >> "$LOG" 2>&1; ES=$?
+            . build/make/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
           else
             say "=== build/ contents ==="
             ls build 2>&1 | head -40 | tee -a "$LOG"
@@ -357,6 +375,45 @@ jobs:
             exit 1
           fi
           say "envsetup.sh exit status: $ES"
+          say "envsetup log files: out=$(wc -c < "$ENV_OUT" 2>/dev/null) bytes, err=$(wc -c < "$ENV_ERR" 2>/dev/null) bytes"
+          if [ "$ES" != 0 ]; then
+            say "=== envsetup.sh failed; dumping diagnostic evidence ==="
+            say "--- last 60 lines of build.log (around envsetup sourcing) ---"
+            tail -60 "$LOG" | tee -a "$LOG"
+            say "--- envsetup.sh stdout (envsetup_out.log, last 80 lines) ---"
+            if [ -f "$ENV_OUT" ]; then
+              tail -80 "$ENV_OUT" | tee -a "$LOG"
+            else
+              say "(no envsetup_out.log at $ENV_OUT)"
+            fi
+            say "--- envsetup.sh stderr (envsetup_err.log, full) ---"
+            if [ -f "$ENV_ERR" ]; then
+              say "[envsetup_err.log size: $(wc -c 2>/dev/null < "$ENV_ERR") bytes]"
+              cat "$ENV_ERR" | tee -a "$LOG"
+            else
+              say "(no envsetup_err.log at $ENV_ERR)"
+            fi
+            say "--- minimal environment snapshot ---"
+            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+            echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
+            echo "which java: $(which java 2>/dev/null || echo NOT FOUND)"
+            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+              "$JAVA_HOME/bin/java" -version 2>&1 | head -1
+            else
+              say "java: not usable from JAVA_HOME"
+            fi
+            echo "repo version: $(repo version 2>&1 | head -1)"
+            echo "python3: $(python3 --version 2>&1)"
+            echo "uname: $(uname -a)"
+            echo "df -BG . :"
+            df -BG . 2>&1 | tail -3 | tee -a "$LOG"
+            echo "free -h :"
+            free -h 2>&1 | tail -3 | tee -a "$LOG"
+            echo "TOP=${TOP:-<unset>}"
+            echo "ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
+            echo "BUILD_TOP=${BUILD_TOP:-<unset>}"
+            say "--- now attempting lunch anyway ---"
+          fi
           tail -40 "$LOG"
           if ! command -v lunch >/dev/null; then
             say "=== build/make contents ==="
