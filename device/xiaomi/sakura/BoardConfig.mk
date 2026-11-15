@@ -154,3 +154,14 @@ RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/strace
 # here would have no effect.)
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 BUILD_BROKEN_DUP_RULES := true
+
+# --- export TWRP variables to Soong -------------------------------------
+# vendor/twrp/config/BoardConfigSoong.mk declares the Soong vendor config
+# namespace "twrpVarsPlugin" and exports TW_THEME, TW_CUSTOM_THEME,
+# TW_EXTRA_LANGUAGES, TW_SCREEN_BLANK_ON_BOOT, TW_NO_SCREEN_BLANK and friends.
+# bootable/recovery/gui/libguitwrp_defaults.go reads TW_THEME only through that
+# namespace: without this include the theme resolves to "", the theme files are
+# copied one level down (twres/portrait_hdpi/... instead of twres/...), and the
+# recovery module's post-install sed on twres/splash.xml fails.
+# It must come after TW_THEME is set above.
+include vendor/twrp/config/BoardConfigSoong.mk
