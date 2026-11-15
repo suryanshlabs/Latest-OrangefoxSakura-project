@@ -325,8 +325,34 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          cd "$SRC"
-          . build/envsetup.sh
+          # GitHub runs bash steps as `bash -e ...`; errexit is inherited, so
+          # turn it off explicitly and check every status we care about.
+          set +e
+          cd "$SRC" || exit 1
+
+          # The twrp-12.1 minimal manifest's build/ tree is patched by
+          # orangefox_sync.sh, so do not assume where envsetup.sh lives.
+          echo "=== build/ layout ==="
+          ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5
+          # NOTE: sourced directly (never through a pipe - a pipeline would run
+          # envsetup.sh in a subshell and lunch() would vanish).
+          if [ -f build/envsetup.sh ]; then
+            . build/envsetup.sh > /tmp/envsetup.log 2>&1; ES=$?
+          elif [ -f build/make/envsetup.sh ]; then
+            . build/make/envsetup.sh > /tmp/envsetup.log 2>&1; ES=$?
+          else
+            echo "::error::no envsetup.sh under $SRC/build"
+            ls build | head -40
+            exit 1
+          fi
+          echo "envsetup.sh exit status: $ES"
+          tail -20 /tmp/envsetup.log
+          if ! command -v lunch >/dev/null; then
+            echo "::error::envsetup.sh did not define lunch()"
+            exit 1
+          fi
+          echo "lunch: $(command -v lunch || echo 'NOT FOUND')"
+          echo "mka:   $(command -v mka || echo 'NOT FOUND (will fall back to make)')"
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
           export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8"
@@ -346,9 +372,20 @@ jobs:
 
           LOG="$GITHUB_WORKSPACE/build.log"
           echo "==> lunch fox_sakura-eng"
-          lunch fox_sakura-eng 2>&1 | tee "$LOG"
-          echo "==> mka -j$J recoveryimage"
-          mka -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
+          # Not piped: lunch is a shell function, and piping would run it in a
+          # subshell so TARGET_PRODUCT would never reach this shell.
+          lunch fox_sakura-eng > "$LOG" 2>&1; LUNCH=$?
+          tail -40 "$LOG"
+          echo "lunch exit status: $LUNCH"
+          echo "TARGET_PRODUCT=${TARGET_PRODUCT:-<unset>} TARGET_DEVICE=${TARGET_DEVICE:-<unset>}"
+          if [ "${TARGET_PRODUCT:-}" != fox_sakura ]; then
+            echo "::error::lunch did not select fox_sakura (got '${TARGET_PRODUCT:-unset}')"
+            exit 1
+          fi
+
+          if command -v mka >/dev/null; then MK="mka"; else MK="make"; fi
+          echo "==> $MK -j$J recoveryimage"
+          "$MK" -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
           status=${PIPESTATUS[0]}
 
           echo "status=$status" >> "$GITHUB_OUTPUT"
