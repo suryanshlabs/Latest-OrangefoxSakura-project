@@ -79,7 +79,9 @@ changing anything — it maps each likely Soong/make error to its actual cause.
    cannot serve FBE ROMs. This is evidence-driven, not "newer is better".
 3. **No metadata encryption claims.** Neither kernel has `dm-default-key` and
    the vendor is Keymaster 3.0. Advertising it would be a lie.
-4. **Sakura-only.** `OF_TARGET_DEVICES="sakura,sakura_india"` is preserved.
+4. **Sakura-only.** `FOX_TARGET_DEVICES="sakura,sakura_india"` is preserved
+   (exported from `device/xiaomi/sakura/vendorsetup.sh`; R12 renamed it from
+   `OF_TARGET_DEVICES`, which `orangefox.mk` now rejects).
    Daisy (Mi A2 Lite) is a different target and is explicitly excluded.
 5. **No proprietary blobs committed.** The tree documents which blobs are
    needed, flags their unverified daisy provenance, and gives a licence-safe

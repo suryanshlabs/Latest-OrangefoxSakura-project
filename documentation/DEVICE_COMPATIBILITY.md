@@ -89,7 +89,9 @@ sakura Android 9 blobs. They may be ABI-compatible (same SoC family, same
 ## 5. Device-detection safety
 
 R11 used `OF_TARGET_DEVICES="sakura,sakura_india"`, which prevents flashing the
-ZIP on a daisy. This must be preserved in the R12 port (`OF_TARGET_DEVICES` in
-`device/fox_sakura.mk`, and `FDEVICE="sakura"` in `vendorsetup.sh`). Never
+ZIP on a daisy. R12 renamed that variable to `FOX_TARGET_DEVICES` (the old name
+is now a hard `$(error)` in `orangefox.mk`), so the R12 port exports
+`FOX_TARGET_DEVICES="sakura,sakura_india"` from
+`device/xiaomi/sakura/vendorsetup.sh`, alongside `FDEVICE="sakura"`. Never
 loosen this to a generic MSM8953 list — that is precisely how a daisy user
 bricks a sakura or vice versa.
