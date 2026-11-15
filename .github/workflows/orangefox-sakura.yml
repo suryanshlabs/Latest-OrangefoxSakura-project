@@ -383,6 +383,14 @@ jobs:
           fi
           echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
 
+          # The OrangeFox theme is copied into $OUT/recovery/root/twres as a
+          # side effect of running soong_build, not by a ninja rule. Soong only
+          # re-runs when one of its inputs is newer, so make sure it does.
+          if [ -f bootable/recovery/gui/Android.bp ]; then
+            touch bootable/recovery/gui/Android.bp
+            echo "touched bootable/recovery/gui/Android.bp to force soong re-run"
+          fi
+
           say "==> lunch fox_sakura-eng"
           # Not piped: lunch is a shell function, and piping would run it in a
           # subshell so TARGET_PRODUCT would never reach this shell.
@@ -409,8 +417,10 @@ jobs:
           say "TW_THEME per make: $(get_build_var TW_THEME 2>&1 | tail -1)"
           say "twres after lunch:"
           ls -la out/target/product/sakura/recovery/root/twres 2>&1 | head -25 | tee -a "$LOG"
-          say "theme leftovers anywhere in recovery root:"
-          find out/target/product/sakura/recovery/root -maxdepth 3 -name 'splash.xml' -o -maxdepth 3 -name 'ui.xml' 2>/dev/null | head -10 | tee -a "$LOG"
+          say "recovery root top level after lunch:"
+          ls -1 out/target/product/sakura/recovery/root 2>&1 | head -40 | tee -a "$LOG"
+          say "theme sources on disk:"
+          ls -1 bootable/recovery/gui/theme/portrait_hdpi 2>&1 | head -10 | tee -a "$LOG"
 
           if command -v mka >/dev/null; then MK="mka"; else MK="make"; fi
           echo "==> $MK -j$J recoveryimage"
@@ -418,6 +428,9 @@ jobs:
           status=${PIPESTATUS[0]}
 
           echo "status=$status" >> "$GITHUB_OUTPUT"
+          # Did the theme survive into the install step?
+          say "twres after make:"
+          ls -la out/target/product/sakura/recovery/root/twres 2>&1 | head -25 | tee -a "$LOG"
           if [ "$status" != 0 ]; then
             echo "::error::Build failed with status $status"
             grep -nE 'error:|Error [0-9]+|\*\*\* \[|FAILED' "$LOG" | head -60 > errors.txt || true
