@@ -77,7 +77,9 @@ Output: `out/target/product/sakura/OrangeFox-unofficial-sakura.img`
 
 If `lunch fox_sakura-eng` is not accepted, the vendor patch did not apply —
 build `twrp_sakura-eng` instead to isolate the cause (that yields stock TWRP,
-not OrangeFox).
+not OrangeFox). For every other first-build failure class (missing modules,
+obsolete 12.1 variables, JDK/toolchain, 32/64-bit), see
+`BUILD_TROUBLESHOOTING.md`.
 
 ## 6. Structural verification
 

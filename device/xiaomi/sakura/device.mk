@@ -10,10 +10,9 @@
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.hardware.keystore=msm8953
 
-# Do not bake build timestamps into the image: keeps rebuilds reproducible.
-PRODUCT_SYSTEM_PROPERTY_BLACKLIST += \
-    ro.bootimage.build.date.utc \
-    ro.build.date.utc
+# NOTE: PRODUCT_SYSTEM_PROPERTY_BLACKLIST (used by the 2024 community tree) is
+# obsolete on a 12.1 base and is not used here. The timestamp props are simply
+# not referenced anywhere in this tree.
 
 # ---------------------------------------------------------------------------
 # Decryption: OrangeFox qcom_decrypt (FDE) + qcom_decrypt_fbe (FBE)
@@ -46,13 +45,11 @@ RECOVERY_LIBRARY_SOURCE_FILES += \
     $(TARGET_OUT_SYSTEM_EXT_SHARED_LIBRARIES)/vendor.display.config@2.0.so
 
 # ---------------------------------------------------------------------------
-# Full recovery image (dedicated 64 MiB recovery partition, as on R11)
+# Battery / health
+#
+# TW_USE_LEGACY_BATTERY_SERVICES := true in BoardConfig.mk is the R11.0_5
+# behaviour in practice: recovery reads the legacy battery sysfs nodes.
+# Requiring android.hardware.health@2.0-service here would add a module the
+# TWRP minimal manifest does not reliably provide — a build-breaking
+# dependency for no benefit. Do not add it back without a health HAL package.
 # ---------------------------------------------------------------------------
-PRODUCT_PROPERTY_OVERRIDES += \
-    ro.twrp.version=3.7.1
-
-# ---------------------------------------------------------------------------
-# Health HAL is required by PRODUCT_ENFORCE_VINTF_MANIFEST on 12.1
-# ---------------------------------------------------------------------------
-PRODUCT_PACKAGES += \
-    android.hardware.health@2.0-service

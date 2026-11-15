@@ -303,6 +303,27 @@ This single table explains most of the R11 design: fstab is ext4-only, FBE is
 skipped, `/data` uses a footer. It also predicts exactly what will fail on
 modern ROMs and is used as the basis for `documentation/ENCRYPTION.md`.
 
+## 5b. Architecture of the shipped user space (verified from ELF headers)
+
+`prop.default` reports an empty `ro.product.cpu.abilist64`, which superficially
+suggests a 32-bit build. The binaries say otherwise:
+
+| Binary | Class | Machine |
+|---|---|---|
+| `init` | ELF64 | AArch64 |
+| `sbin/recovery` | ELF64 | AArch64 |
+| `sbin/adbd` | ELF64 | AArch64 |
+| `sbin/toybox` | ELF64 | AArch64 |
+| `sbin/libc.so`, `libc++.so` | ELF64 | AArch64 |
+| `sbin/keystore`, `sbin/qseecomd` | ELF64 | AArch64 |
+| `sbin/linker64` | ELF64 | AArch64 |
+| `sbin/linker`, `sbin/bash`, `sbin/magiskboot` | ELF32 | ARM |
+
+So R11 is a **64-bit primary** recovery with a 32-bit secondary used only for
+prebuilt helpers (`bash`, `magiskboot`, `linker`). This settles the
+`TARGET_ARCH` question for the port: `arm64` primary + `arm` secondary, and the
+empty `abilist64` prop is a build-prop quirk that must not be imitated.
+
 ## 6. What the R11 build actually was
 
 * OmniROM 16.1.0 (Android 9, SDK 28) omni_sakura-eng, built on OrangeFox Cirrus CI

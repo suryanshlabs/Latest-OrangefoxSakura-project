@@ -50,8 +50,9 @@ BOARD_KERNEL_CMDLINE := androidboot.hardware=qcom msm_rtb.filter=0x237 ehci-hcd.
 BOARD_KERNEL_BASE := 0x80000000
 BOARD_KERNEL_PAGESIZE := 2048
 BOARD_KERNEL_TAGS_OFFSET := 0x00000100
+# += not := — TWRP adds its own mkbootimg args; := would discard them.
 BOARD_RAMDISK_OFFSET := 0x01000000
-BOARD_MKBOOTIMG_ARGS := --header_version 0
+BOARD_MKBOOTIMG_ARGS += --header_version 0
 
 # ---------------------------------------------------------------------------
 # Partitions (fixed layout — sakura has no dynamic/super partition)
@@ -95,9 +96,16 @@ BOARD_USES_METADATA_PARTITION := false
 
 # ---------------------------------------------------------------------------
 # Treble / vintf
+#
+# PRODUCT_ENFORCE_VINTF_MANIFEST is deliberately NOT set.
+# Enforcing the vintf manifest requires DEVICE_MANIFEST_FILE / DEVICE_MATRIX_FILE
+# to be provided by the tree; this port ships no such files (R11.0_5 shipped
+# none either — its ramdisk had no vendor/etc/vintf/manifest.xml). Turning
+# enforcement on without them fails the build or produces a recovery that
+# cannot start its HALs. If sakura-correct vintf manifests are later extracted
+# from the stock vendor image, set DEVICE_MANIFEST_FILE and then re-enable.
 # ---------------------------------------------------------------------------
 PRODUCT_FULL_TREBLE_OVERRIDE := true
-PRODUCT_ENFORCE_VINTF_MANIFEST := true
 
 # ---------------------------------------------------------------------------
 # Init
@@ -108,7 +116,7 @@ PRODUCT_ENFORCE_VINTF_MANIFEST := true
 # build-verified here, so this port deliberately keeps the R11 approach and
 # sets the needed props from product overrides (device.mk). This is a
 # reduction in unverifiable surface area, not a lost feature.
-# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # Recovery / TWRP-OrangeFox display + hardware
 # ---------------------------------------------------------------------------
@@ -132,9 +140,6 @@ TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_LIBRESETPROP := true
 TW_INCLUDE_RESETPROP := true
 
-# MagiskBoot patching (preserves R11 behaviour)
-TW_INCLUDE_CRYPTO_FBE_DECRYPTION := false
-
 # Debugging
 TWRP_INCLUDE_LOGCAT := true
 TARGET_USES_LOGD := true
@@ -143,7 +148,9 @@ RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/debuggerd
 TARGET_RECOVERY_DEVICE_MODULES += strace
 RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/strace
 
-# Build tolerances for this legacy platform on a 12.1 base
+# Build tolerances for this legacy platform on a 12.1 base.
+# (ALLOW_MISSING_DEPENDENCIES is an *environment* variable read by the build
+# system, not a make variable — it is exported by build/build.sh. Setting it
+# here would have no effect.)
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 BUILD_BROKEN_DUP_RULES := true
-ALLOW_MISSING_DEPENDENCIES := true

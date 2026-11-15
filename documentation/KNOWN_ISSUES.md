@@ -34,24 +34,34 @@ community tree, whose header says the blobs come from
 ABI-compatible but **unproven**. Extract sakura Android 9 blobs
 (`V12.0.x.x.PDI*`) and compare SHA-1 (`DEPENDENCIES.md` §4).
 
-## KI-4 — Recovery install partition is unverified (medium)
+## KI-4 — Recovery install partition: hardened, still confirm once (low)
 
-`FOX_RECOVERY_INSTALL_PARTITION="/dev/block/mmcblk0p49"` is inherited from the
-community tree. Verify on device:
+The community tree hard-coded `/dev/block/mmcblk0p49`, a raw partition number
+nobody verified for sakura — flashing an image to the wrong partition number is
+a reliable way to hard-brick. This port uses the **by-name symlink** instead:
 
-```bash
-ls -l /dev/block/bootdevice/by-name/recovery     # expect mmcblk0p49
+```
+FOX_RECOVERY_INSTALL_PARTITION="/dev/block/bootdevice/by-name/recovery"
 ```
 
-If it differs, the ZIP installer will flash the wrong partition. Verify before
-release; prefer the `by-name/recovery` path if the installer supports it.
+the same path the R11 fstab used, and correct by construction whenever the boot
+device is `7824900.sdhci`. Confirm once on device:
+
+```bash
+ls -l /dev/block/bootdevice/by-name/recovery
+```
+
+If the OrangeFox installer turns out to reject a by-name path (untested), fall
+back to the raw number **after** reading it from that symlink — never assume.
 
 ## KI-5 — No build has been performed (blocker for any release claim)
 
 See `TEST_REPORT.md` §2. Everything in `device/` is reviewed-but-unbuilt.
-Expect real Soong/`mka` issues on first build (12.1 base + legacy MSM8953):
-`ALLOW_MISSING_DEPENDENCIES`, `BUILD_BROKEN_*` flags are already set, but
-further fixes may be needed. Do not "fix" them by disabling OrangeFox features.
+Expect real Soong/`mka` issues on first build (12.1 base + legacy MSM8953).
+`documentation/BUILD_TROUBLESHOOTING.md` lists each known failure class with
+its fix — the obsolete-variable, missing-module, VINTF-enforcement and
+mkbootimg-args ones are already corrected in this tree. Do not "fix" remaining
+errors by disabling OrangeFox features.
 
 ## KI-6 — `vendor/twrp` must be patched or you get plain TWRP (medium)
 

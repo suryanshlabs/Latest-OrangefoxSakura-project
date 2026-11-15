@@ -22,8 +22,8 @@ on fs
     chown system system /dev/ion
     install_keyring
 
-on boot
-    start health-hal-2-0
+# No health HAL: TW_USE_LEGACY_BATTERY_SERVICES handles battery/charging via
+# the legacy sysfs interface, exactly as R11.0_5 did.
 
 on init
     setprop prepdecrypt.loglevel 2

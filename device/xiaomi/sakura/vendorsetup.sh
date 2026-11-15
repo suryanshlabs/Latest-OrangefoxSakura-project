@@ -89,10 +89,14 @@ if [ "$1" = "$FDEVICE" ] || [ "$FOX_BUILD_DEVICE" = "$FDEVICE" ]; then
     # Keymaster actually available on the sakura Android 9 vendor.
     export OF_DEFAULT_KEYMASTER_VERSION=3.0
 
-    # Recovery install target. Derived from the community tree; MUST be
-    # verified on device against /dev/block/bootdevice/by-name/recovery
-    # before any release (documentation/KNOWN_ISSUES.md, KI-4).
-    export FOX_RECOVERY_INSTALL_PARTITION="/dev/block/mmcblk0p49"
+    # Recovery install target.
+    # The community tree hard-codes "/dev/block/mmcblk0p49", a raw partition
+    # number that nobody verified for sakura. Flashing a recovery image to the
+    # wrong partition number is the fastest way to hard-brick a device, so this
+    # uses the by-name symlink instead, which is correct by construction as long
+    # as the boot device is 7824900.sdhci (it is, per the boot cmdline).
+    # Verify once on device: ls -l /dev/block/bootdevice/by-name/recovery
+    export FOX_RECOVERY_INSTALL_PARTITION="/dev/block/bootdevice/by-name/recovery"
 
     # Optional: pin a specific Magisk zip. R11 bundled Magisk.zip from FoxFiles
     # instead, so this stays unset by default.

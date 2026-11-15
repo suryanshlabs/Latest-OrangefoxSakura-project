@@ -41,7 +41,8 @@ device/xiaomi/sakura/     the R12 device tree (the actual port)
 manifest/                 pinned refs + sync recipe
 build/                    fetch_reference, fetch_kernel, sync, build, verify_image
 tools/                    bootimg.py, verify_dtb.py (dependency-free)
-documentation/            full audit: sources, kernel, encryption, compatibility
+documentation/            full audit: sources, kernel, encryption, compatibility,
+                          plus BUILD_TROUBLESHOOTING.md (the Soong/first-build issues)
 testing/android-9..17/    per-ROM-generation test records (empty = untested)
 ```
 
@@ -65,6 +66,9 @@ python3 tools/verify_dtb.py reference/unpacked/kernel   # FAILs: stock kernel ha
 ```
 
 Then run the device tests in `testing/android-N/` and fill in real results.
+
+If the first build stops, read `documentation/BUILD_TROUBLESHOOTING.md` before
+changing anything — it maps each likely Soong/make error to its actual cause.
 
 ## Key design decisions (and why)
 
