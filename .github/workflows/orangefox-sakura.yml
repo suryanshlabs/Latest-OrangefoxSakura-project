@@ -338,24 +338,33 @@ jobs:
           LOG="$GITHUB_WORKSPACE/build.log"
           say() { echo "$@" | tee -a "$LOG"; }
 
+          : > "$LOG"
           say "=== pwd: $(pwd) ==="
           say "=== build step paths (for diagnostics) ==="
           say "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-<unset>}"
           say "PWD=$(pwd)"
           say "SRC=${SRC:-<unset>}"
           say "LOG=${LOG}"
-          say ": > \"$LOG\""
-          : > "$LOG"
-          say "LOG recreated; size now $(wc -c < "$LOG") bytes"
 
           say "=== top level ==="
           ls -1 2>&1 | head -20 | tee -a "$LOG"
           say "=== build/ layout ==="
           ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5 | tee -a "$LOG"
 
-          # Helper log files are written beside build.log so the dump step can
-          # always find them even when $WORKSPACE is set later or differs from
-          # the directory we are building in.
+          # Prefer the portable JDK 11 installed earlier; ensure it wins in PATH.
+          if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+            export PATH="$JAVA_HOME/bin:$PATH"
+          fi
+          export JAVA_HOME ANDROID_JAVA_HOME
+
+          say "=== toolchain (before envsetup) ==="
+          say "JAVA_HOME=${JAVA_HOME:-<unset>}"
+          say "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
+          say "which java: $(command -v java 2>/dev/null || echo NOT FOUND)"
+          java -version 2>&1 | head -2 | tee -a "$LOG"
+          say "python3: $(python3 --version 2>&1)"
+
+          # Helper log files beside build.log so artifacts can carry diagnostics.
           HelperDir="$(dirname "$LOG")"
           ENV_OUT="$HelperDir/envsetup_out.log"
           ENV_ERR="$HelperDir/envsetup_err.log"
@@ -364,105 +373,61 @@ jobs:
 
           # NOTE: sourced directly (never through a pipe - a pipeline would run
           # envsetup.sh in a subshell and lunch() would vanish).
-          # DEBUG: trace to capture the exact failing line
-          set -x
-          echo "=== DEBUG: about to source envsetup.sh ===" >> "$LOG"
-          echo "JAVA_HOME=${JAVA_HOME:-<unset>}" >> "$LOG"
-          echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}" >> "$LOG"
-          echo "which java: $(which java 2>/dev/null || echo NOT FOUND)" >> "$LOG"
-          echo "PWD=$PWD" >> "$LOG"
-          echo "SRC=$SRC" >> "$LOG"
-          echo "HOME=$HOME" >> "$LOG"
-          echo "TMPDIR=${TMPDIR:-<unset>}" >> "$LOG"
-          echo "PATH=$PATH" >> "$LOG"
-          export JAVA_HOME
-          export ANDROID_JAVA_HOME
-          set +x
           if [ -f build/envsetup.sh ]; then
-            . build/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
-            set -x
-            echo "envsetup.sh traced; exit status: $ES" >> "$LOG"
+            ESCRIPT=build/envsetup.sh
           elif [ -f build/make/envsetup.sh ]; then
-            . build/make/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
-            set -x
-            echo "envsetup.sh traced; exit status: $ES" >> "$LOG"
+            ESCRIPT=build/make/envsetup.sh
           else
             say "=== build/ contents ==="
             ls build 2>&1 | head -40 | tee -a "$LOG"
             echo "::error::no envsetup.sh under $SRC/build (see build.log)"
             exit 1
           fi
-          elif [ -f build/make/envsetup.sh ]; then
-            . build/make/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
-          else
-            say "=== build/ contents ==="
-            ls build 2>&1 | head -40 | tee -a "$LOG"
-            echo "::error::no envsetup.sh under $SRC/build (see build.log)"
-            exit 1
-          fi
+
+          say "=== sourcing $ESCRIPT ==="
+          # Run with bash tracing to a trace file so the failing line is visible
+          # even when envsetup.sh writes little/no stderr.
+          TRACE="$HelperDir/envsetup_trace.log"
+          : > "$TRACE"
+          BASH_XTRACEFD=19
+          exec 19>"$TRACE"
+          set -x
+          . "$ESCRIPT" >"$ENV_OUT" 2>"$ENV_ERR"; ES=$?
+          set +x
+          exec 19>&-
+
           say "envsetup.sh exit status: $ES"
-          say "envsetup log files: out=$(wc -c < "$ENV_OUT" 2>/dev/null) bytes, err=$(wc -c < "$ENV_ERR" 2>/dev/null) bytes"
+          say "envsetup log sizes: out=$(wc -c < "$ENV_OUT" 2>/dev/null || echo 0) bytes, err=$(wc -c < "$ENV_ERR" 2>/dev/null || echo 0) bytes, trace=$(wc -c < "$TRACE" 2>/dev/null || echo 0) bytes"
+
           if [ "$ES" != 0 ]; then
-            say "=== envsetup.sh failed; dumping diagnostic evidence ==="
-            say "--- last 60 lines of build.log (around envsetup sourcing) ---"
-            tail -60 "$LOG" | tee -a "$LOG"
-            say "--- envsetup.sh stdout (envsetup_out.log, last 80 lines) ---"
-            if [ -f "$ENV_OUT" ]; then
-              tail -80 "$ENV_OUT" | tee -a "$LOG"
-            else
-              say "(no envsetup_out.log at $ENV_OUT)"
-            fi
-            say "--- envsetup.sh stderr (envsetup_err.log, full) ---"
-            if [ -f "$ENV_ERR" ]; then
-              say "[envsetup_err.log size: $(wc -c 2>/dev/null < "$ENV_ERR") bytes]"
-              cat "$ENV_ERR" | tee -a "$LOG"
-            else
-              say "(no envsetup_err.log at $ENV_ERR)"
-            fi
-            say "--- minimal environment snapshot ---"
-            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
-            echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
-            echo "which java: $(which java 2>/dev/null || echo NOT FOUND)"
-            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-              "$JAVA_HOME/bin/java" -version 2>&1 | head -1
-            else
-              say "java: not usable from JAVA_HOME"
-            fi
-            echo "repo version: $(repo version 2>&1 | head -1)"
-            echo "python3: $(python3 --version 2>&1)"
-            echo "uname: $(uname -a)"
-            say "envsetup.sh failed; stopping build"
+            say "=== envsetup.sh stdout (last 120 lines) ==="
+            tail -120 "$ENV_OUT" 2>&1 | tee -a "$LOG"
+            say "=== envsetup.sh stderr (last 200 lines) ==="
+            tail -200 "$ENV_ERR" 2>&1 | tee -a "$LOG"
+            say "=== envsetup.sh trace (last 120 lines) ==="
+            tail -120 "$TRACE" 2>&1 | tee -a "$LOG"
+            say "=== environment snapshot after failure ==="
+            say "TOP=${TOP:-<unset>} ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
+            say "pwd=$(pwd)"
+            say "which java: $(command -v java 2>/dev/null || echo NOT FOUND)"
+            java -version 2>&1 | head -2 | tee -a "$LOG"
+            df -h . 2>&1 | tail -3 | tee -a "$LOG"
+            echo "::error::envsetup.sh failed with status $ES (see build.log and envsetup_* logs in artifact)"
             exit 1
           fi
-          tail -40 "$LOG"
-          if ! command -v lunch >/dev/null; then            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
-            echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
-            echo "which java: $(which java 2>/dev/null || echo NOT FOUND)"
-            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-              "$JAVA_HOME/bin/java" -version 2>&1 | head -1
-            else
-              say "java: not usable from JAVA_HOME"
-            fi
-            echo "repo version: $(repo version 2>&1 | head -1)"
-            echo "python3: $(python3 --version 2>&1)"
-            echo "uname: $(uname -a)"
-            echo "df -BG . :"
-            df -BG . 2>&1 | tail -3 | tee -a "$LOG"
-            echo "free -h :"
-            free -h 2>&1 | tail -3 | tee -a "$LOG"
-            echo "TOP=${TOP:-<unset>}"
-            echo "ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
-            echo "BUILD_TOP=${BUILD_TOP:-<unset>}"
-            say "--- now attempting lunch anyway ---"
-            exit 1
-          fi
-          tail -40 "$LOG"
-          if ! command -v lunch >/dev/null; then
-            say "=== build/make contents ==="
-            ls build/make 2>&1 | head -20 | tee -a "$LOG"
+
+          # Persist helper logs into build.log tail for visibility too.
+          say "=== envsetup.sh stdout (last 40 lines) ==="
+          tail -40 "$ENV_OUT" 2>&1 | tee -a "$LOG"
+
+          if ! command -v lunch >/dev/null 2>&1; then
+            say "=== envsetup.sh did not define lunch() ==="
+            tail -120 "$ENV_ERR" 2>&1 | tee -a "$LOG"
+            tail -120 "$TRACE" 2>&1 | tee -a "$LOG"
             echo "::error::envsetup.sh did not define lunch() (see build.log)"
             exit 1
           fi
+
           echo "lunch: $(command -v lunch || echo 'NOT FOUND')"
           echo "mka:   $(command -v mka || echo 'NOT FOUND (will fall back to make)')"
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -481,6 +446,16 @@ jobs:
             [ "$J" -gt 8 ] && J=8
           fi
           echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
+
+          say "==> lunch fox_sakura-eng"
+          lunch fox_sakura-eng 2>&1 | tee -a "$LOG"
+          LUNCH_STATUS=${PIPESTATUS[0]}
+          if [ "$LUNCH_STATUS" != 0 ]; then
+            echo "::error::lunch fox_sakura-eng failed with status $LUNCH_STATUS"
+            exit 1
+          fi
+
+          say "TARGET_PRODUCT=${TARGET_PRODUCT:-<unset>} TARGET_BUILD_VARIANT=${TARGET_BUILD_VARIANT:-<unset>} TW_THEME=${TW_THEME:-<unset>}"
 
           say "=== populating OrangeFox theme into recovery/root/twres ==="
           THEME_SRC="bootable/recovery/gui/theme"
@@ -540,7 +515,6 @@ jobs:
             fi
           fi
 
-          say "==> lunch fox_sakura-eng"
           if command -v mka >/dev/null; then MK="mka"; else MK="make"; fi
           echo "==> $MK -j$J recoveryimage"
           "$MK" -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
@@ -578,8 +552,11 @@ jobs:
           for f in OrangeFox-unofficial-sakura.img recovery.img; do
             [ -f "$OUT/$f" ] && cp "$OUT/$f" artifacts/
           done
-          [ -f "$GITHUB_WORKSPACE/build.log" ] && cp build.log artifacts/ || true
-          [ -f errors.txt ] && cp errors.txt artifacts/ || true
+          for f in "$GITHUB_WORKSPACE/build.log" "$GITHUB_WORKSPACE/errors.txt" \
+                   "$GITHUB_WORKSPACE/envsetup_out.log" "$GITHUB_WORKSPACE/envsetup_err.log" \
+                   "$GITHUB_WORKSPACE/envsetup_trace.log"; do
+            [ -f "$f" ] && cp "$f" artifacts/ || true
+          done
           {
             echo "run:        $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             echo "commit:     $GITHUB_SHA"
