@@ -324,10 +324,13 @@ jobs:
         id: build
         shell: bash
         run: |
-          set -uo pipefail
           # GitHub runs bash steps as `bash -e ...`; errexit is inherited, so
           # turn it off explicitly and check every status we care about.
           set +e
+          # nounset MUST be off: build/envsetup.sh reads unset variables (TOP,
+          # ZSH_VERSION, ...) and aborts under `set -u` before defining lunch().
+          set +u
+          set -o pipefail
           cd "$SRC" || exit 1
 
           # Everything here is also written to build.log, which the artifact
