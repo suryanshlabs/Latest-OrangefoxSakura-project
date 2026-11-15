@@ -364,8 +364,34 @@ jobs:
 
           # NOTE: sourced directly (never through a pipe - a pipeline would run
           # envsetup.sh in a subshell and lunch() would vanish).
+          # DEBUG: trace to capture the exact failing line
+          set -x
+          echo "=== DEBUG: about to source envsetup.sh ===" >> "$LOG"
+          echo "JAVA_HOME=${JAVA_HOME:-<unset>}" >> "$LOG"
+          echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}" >> "$LOG"
+          echo "which java: $(which java 2>/dev/null || echo NOT FOUND)" >> "$LOG"
+          echo "PWD=$PWD" >> "$LOG"
+          echo "SRC=$SRC" >> "$LOG"
+          echo "HOME=$HOME" >> "$LOG"
+          echo "TMPDIR=${TMPDIR:-<unset>}" >> "$LOG"
+          echo "PATH=$PATH" >> "$LOG"
+          export JAVA_HOME
+          export ANDROID_JAVA_HOME
+          set +x
           if [ -f build/envsetup.sh ]; then
             . build/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
+            set -x
+            echo "envsetup.sh traced; exit status: $ES" >> "$LOG"
+          elif [ -f build/make/envsetup.sh ]; then
+            . build/make/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
+            set -x
+            echo "envsetup.sh traced; exit status: $ES" >> "$LOG"
+          else
+            say "=== build/ contents ==="
+            ls build 2>&1 | head -40 | tee -a "$LOG"
+            echo "::error::no envsetup.sh under $SRC/build (see build.log)"
+            exit 1
+          fi
           elif [ -f build/make/envsetup.sh ]; then
             . build/make/envsetup.sh > "$ENV_OUT" 2> "$ENV_ERR"; ES=$?
           else
@@ -405,6 +431,21 @@ jobs:
             echo "repo version: $(repo version 2>&1 | head -1)"
             echo "python3: $(python3 --version 2>&1)"
             echo "uname: $(uname -a)"
+            say "envsetup.sh failed; stopping build"
+            exit 1
+          fi
+          tail -40 "$LOG"
+          if ! command -v lunch >/dev/null; then            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+            echo "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
+            echo "which java: $(which java 2>/dev/null || echo NOT FOUND)"
+            if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+              "$JAVA_HOME/bin/java" -version 2>&1 | head -1
+            else
+              say "java: not usable from JAVA_HOME"
+            fi
+            echo "repo version: $(repo version 2>&1 | head -1)"
+            echo "python3: $(python3 --version 2>&1)"
+            echo "uname: $(uname -a)"
             echo "df -BG . :"
             df -BG . 2>&1 | tail -3 | tee -a "$LOG"
             echo "free -h :"
@@ -413,6 +454,7 @@ jobs:
             echo "ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
             echo "BUILD_TOP=${BUILD_TOP:-<unset>}"
             say "--- now attempting lunch anyway ---"
+            exit 1
           fi
           tail -40 "$LOG"
           if ! command -v lunch >/dev/null; then
