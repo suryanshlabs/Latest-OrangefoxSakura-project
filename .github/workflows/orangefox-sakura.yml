@@ -330,25 +330,35 @@ jobs:
           set +e
           cd "$SRC" || exit 1
 
-          # The twrp-12.1 minimal manifest's build/ tree is patched by
-          # orangefox_sync.sh, so do not assume where envsetup.sh lives.
-          echo "=== build/ layout ==="
-          ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5
+          # Everything here is also written to build.log, which the artifact
+          # step uploads - the step's own console log is too long to read back.
+          LOG="$GITHUB_WORKSPACE/build.log"
+          : > "$LOG"
+          say() { echo "$@" | tee -a "$LOG"; }
+
+          say "=== pwd: $(pwd) ==="
+          say "=== top level ==="
+          ls -1 2>&1 | head -20 | tee -a "$LOG"
+          say "=== build/ layout ==="
+          ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5 | tee -a "$LOG"
           # NOTE: sourced directly (never through a pipe - a pipeline would run
           # envsetup.sh in a subshell and lunch() would vanish).
           if [ -f build/envsetup.sh ]; then
-            . build/envsetup.sh > /tmp/envsetup.log 2>&1; ES=$?
+            . build/envsetup.sh >> "$LOG" 2>&1; ES=$?
           elif [ -f build/make/envsetup.sh ]; then
-            . build/make/envsetup.sh > /tmp/envsetup.log 2>&1; ES=$?
+            . build/make/envsetup.sh >> "$LOG" 2>&1; ES=$?
           else
-            echo "::error::no envsetup.sh under $SRC/build"
-            ls build | head -40
+            say "=== build/ contents ==="
+            ls build 2>&1 | head -40 | tee -a "$LOG"
+            echo "::error::no envsetup.sh under $SRC/build (see build.log)"
             exit 1
           fi
-          echo "envsetup.sh exit status: $ES"
-          tail -20 /tmp/envsetup.log
+          say "envsetup.sh exit status: $ES"
+          tail -40 "$LOG"
           if ! command -v lunch >/dev/null; then
-            echo "::error::envsetup.sh did not define lunch()"
+            say "=== build/make contents ==="
+            ls build/make 2>&1 | head -20 | tee -a "$LOG"
+            echo "::error::envsetup.sh did not define lunch() (see build.log)"
             exit 1
           fi
           echo "lunch: $(command -v lunch || echo 'NOT FOUND')"
@@ -370,16 +380,17 @@ jobs:
           fi
           echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
 
-          LOG="$GITHUB_WORKSPACE/build.log"
-          echo "==> lunch fox_sakura-eng"
+          say "==> lunch fox_sakura-eng"
           # Not piped: lunch is a shell function, and piping would run it in a
           # subshell so TARGET_PRODUCT would never reach this shell.
-          lunch fox_sakura-eng > "$LOG" 2>&1; LUNCH=$?
+          lunch fox_sakura-eng >> "$LOG" 2>&1; LUNCH=$?
           tail -40 "$LOG"
-          echo "lunch exit status: $LUNCH"
+          say "lunch exit status: $LUNCH"
           echo "TARGET_PRODUCT=${TARGET_PRODUCT:-<unset>} TARGET_DEVICE=${TARGET_DEVICE:-<unset>}"
           if [ "${TARGET_PRODUCT:-}" != fox_sakura ]; then
-            echo "::error::lunch did not select fox_sakura (got '${TARGET_PRODUCT:-unset}')"
+            say "=== lunch combos offered ==="
+            { lunch 2>&1 | head -40; } | tee -a "$LOG"
+            echo "::error::lunch did not select fox_sakura (got '${TARGET_PRODUCT:-unset}'); see build.log"
             exit 1
           fi
 
