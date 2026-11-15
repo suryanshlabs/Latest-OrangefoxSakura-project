@@ -174,10 +174,9 @@ jobs:
           # The runner has JDK 21 and no passwordless sudo, so a system JDK 11
           # cannot be installed. setup_jdk11.sh falls back to a Temurin 11
           # tarball in $HOME, which is all Soong needs.
-          ./build/setup_jdk11.sh
-          eval "$(./build/setup_jdk11.sh)"
-          echo "JAVA_HOME=$JAVA_HOME"
-          "$JAVA_HOME/bin/java" -version 2>&1 | head -1
+          JH="$(./build/setup_jdk11.sh)"
+          echo "JAVA_HOME=$JH"
+          "$JH/bin/java" -version 2>&1 | head -1
 
       - name: Require core build packages
         shell: bash

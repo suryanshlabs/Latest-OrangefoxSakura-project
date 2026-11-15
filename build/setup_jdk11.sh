@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./build/setup_jdk11.sh              # ensure + print JAVA_HOME
-#   eval "$(./build/setup_jdk11.sh)"    # ensure + export in the current shell
+#   export JAVA_HOME="$(./build/setup_jdk11.sh)"   # ensure + export
 #
 # Exit codes: 0 ok, 1 could not obtain a JDK 11.
 #
@@ -24,7 +24,7 @@ have_jdk11() {
 
 # 1. A JDK 11 we already installed.
 if have_jdk11 "$JDK_DIR"; then
-    echo "export JAVA_HOME=\"$JDK_DIR\"" >&2
+    echo "jdk11: JAVA_HOME=$JDK_DIR" >&2
     echo "$JDK_DIR"
     exit 0
 fi
@@ -33,7 +33,7 @@ fi
 if command -v java >/dev/null && java -version 2>&1 | grep -q 'version "11'; then
     JH="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
     if have_jdk11 "$JH"; then
-        echo "export JAVA_HOME=\"$JH\"" >&2
+        echo "jdk11: JAVA_HOME=$JH" >&2
         echo "$JH"
         exit 0
     fi
@@ -47,7 +47,7 @@ if sudo -n true 2>/dev/null; then
         openjdk-11-jdk >&2 || true
     if command -v java >/dev/null && java -version 2>&1 | grep -q 'version "11'; then
         JH="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
-        echo "export JAVA_HOME=\"$JH\"" >&2
+        echo "jdk11: JAVA_HOME=$JH" >&2
         echo "$JH"
         exit 0
     fi
@@ -72,5 +72,5 @@ if ! have_jdk11 "$JDK_DIR"; then
 fi
 
 echo "installed: $("$JDK_DIR/bin/java" -version 2>&1 | head -1)" >&2
-echo "export JAVA_HOME=\"$JDK_DIR\"" >&2
+echo "jdk11: JAVA_HOME=$JDK_DIR" >&2
 echo "$JDK_DIR"
