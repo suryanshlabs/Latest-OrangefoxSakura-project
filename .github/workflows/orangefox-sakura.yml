@@ -161,21 +161,23 @@ jobs:
           echo "user=$(id -un) home=$HOME"
           echo "loadavg=$(cat /proc/loadavg)"
 
-      - name: Require JDK 11
+      - name: Checkout this repository (for the setup scripts)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Ensure JDK 11 (portable, no sudo needed)
         shell: bash
         run: |
-          set -uo pipefail
-          have_jdk11() { java -version 2>&1 | grep -q 'version "11'; }
-          if have_jdk11; then echo "JDK 11 already present: $(java -version 2>&1 | head -1)"; exit 0; fi
-          echo "JDK 11 missing; current: $(java -version 2>&1 | head -1 || echo none)"
-          if sudo -n true 2>/dev/null; then
-            sudo apt-get update -qq || true
-            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends openjdk-11-jdk || true
-          fi
-          if ! have_jdk11; then
-            echo "::error::OpenJDK 11 is required by the Android 12.1 Soong bootstrap and could not be installed (no passwordless sudo?). Install it on the runner, then re-run."
-            exit 1
-          fi
+          set -euo pipefail
+          echo "current java: $(java -version 2>&1 | head -1 || echo none)"
+          # The runner has JDK 21 and no passwordless sudo, so a system JDK 11
+          # cannot be installed. setup_jdk11.sh falls back to a Temurin 11
+          # tarball in $HOME, which is all Soong needs.
+          ./build/setup_jdk11.sh
+          eval "$(./build/setup_jdk11.sh)"
+          echo "JAVA_HOME=$JAVA_HOME"
+          "$JAVA_HOME/bin/java" -version 2>&1 | head -1
 
       - name: Require core build packages
         shell: bash
@@ -217,6 +219,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Ensure JDK 11 (portable, no sudo needed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          JH="$(./build/setup_jdk11.sh)"
+          {
+            echo "JAVA_HOME=$JH"
+            echo "ANDROID_JAVA_HOME=$JH"
+          } >> "$GITHUB_ENV"
+          echo "$JH/bin" >> "$GITHUB_PATH"
+          "$JH/bin/java" -version 2>&1 | head -1
 
       - name: Install extra dependencies (best effort)
         shell: bash

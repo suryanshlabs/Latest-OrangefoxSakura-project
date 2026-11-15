@@ -21,6 +21,27 @@ sudo apt install -y git curl python3 repo zip unzip \
   squashfs-tools xsltproc zlib1g-dev
 ```
 
+### ServerHive self-hosted runner (measured 2026-11-15)
+
+The runner account (`santhronyt`) has **no passwordless sudo**, so the apt line
+above cannot be run from CI there. Measured at the same time: `java` is
+**OpenJDK 21**, while the Android 12.1 Soong bootstrap requires **11**.
+
+`build/setup_jdk11.sh` solves the JDK without root - it reuses a system JDK 11
+when one exists, otherwise it unpacks the current Temurin 11 GA tarball into
+`$HOME/.jdk11` and prints the `JAVA_HOME` to use. Both the preflight and the
+build jobs call it, so no apt step is required for the JDK.
+
+System packages are different: if the preflight reports missing tools, they must
+be installed once by whoever holds root on the host:
+
+```bash
+sudo apt install -y bc bison build-essential ccache flex g++-multilib \
+  gcc-multilib libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2 \
+  libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc \
+  zip zlib1g-dev cpio lz4
+```
+
 `repo` must be the Google launcher (`https://storage.googleapis.com/git-repo-downloads/repo`).
 
 ### This analysis environment (for reproducibility of the report)
