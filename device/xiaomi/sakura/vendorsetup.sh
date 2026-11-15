@@ -31,7 +31,8 @@ if [ "$1" = "$FDEVICE" ] || [ "$FOX_BUILD_DEVICE" = "$FDEVICE" ]; then
     # --- device identity / installer guard -------------------------------
     # R11 used "sakura,sakura_india". Keep it: this is the check that stops a
     # Mi A2 Lite (daisy) user flashing this ZIP. Never widen this list.
-    export OF_TARGET_DEVICES="sakura,sakura_india"
+    # R12 renamed this: orangefox.mk hard-errors on OF_TARGET_DEVICES.
+    export FOX_TARGET_DEVICES="sakura,sakura_india"
 
     # --- shell & tools (identical to R11.0_5) ----------------------------
     export FOX_USE_BASH_SHELL=1
