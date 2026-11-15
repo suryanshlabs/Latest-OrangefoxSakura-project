@@ -262,13 +262,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$SRC")"
+          SYNC_CLONE="$(dirname "$SRC")/sync"
           if [ ! -d "$SRC/.repo" ]; then
             echo "=== cold sync into $SRC (this is the slow part) ==="
-            TMP="$(mktemp -d)"
-            git clone https://gitlab.com/OrangeFox/sync.git "$TMP/sync"
-            git -C "$TMP/sync" checkout -q "$SYNC_SHA"
-            "$TMP/sync/orangefox_sync.sh" --branch "$FOX_BRANCH" --path "$SRC"
-            rm -rf "$TMP"
+            if [ ! -d "$SYNC_CLONE/.git" ]; then
+              git clone https://gitlab.com/OrangeFox/sync.git "$SYNC_CLONE"
+            fi
+            git -C "$SYNC_CLONE" checkout -q "$SYNC_SHA" \
+              || { echo "::error::cannot check out pinned sync commit $SYNC_SHA"; exit 1; }
+            # orangefox_sync.sh resolves its patches from $PWD (BASE_DIR="$PWD"),
+            # so it MUST be run from inside the clone, not from the workspace.
+            PATCH="$SYNC_CLONE/patches/patch-manifest-fox_$FOX_BRANCH.diff"
+            if [ ! -f "$PATCH" ]; then
+              echo "::error::sync clone has no $PATCH"
+              exit 1
+            fi
+            ( cd "$SYNC_CLONE" && ./orangefox_sync.sh --branch "$FOX_BRANCH" --path "$SRC" )
           elif [ "${{ inputs.resync }}" = "true" ]; then
             echo "=== forced resync of existing tree ==="
             ( cd "$SRC" && repo sync --force-sync -c -j"$(nproc)" --no-clone-bundle --no-tags )
@@ -369,7 +378,8 @@ jobs:
             echo "run:        $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             echo "commit:     $GITHUB_SHA"
             echo "fox branch: $FOX_BRANCH (sync $SYNC_SHA)"
-            echo "fox release version: $(grep -m1 FOX_BASE_VERSION "$SRC/../../sync"/*.sh 2>/dev/null || echo 'R12.0 (per orangefox_sync.sh)')"
+            echo "fox release version: $(grep -m1 FOX_BASE_VERSION "$(dirname "$SRC")/sync/orangefox_sync.sh" 2>/dev/null || echo 'unknown')"
+            echo "sync tooling: $(git -C "$(dirname "$SRC")/sync" rev-parse HEAD 2>/dev/null || echo 'not cloned')"
             echo "device:     $DEVICE"
             echo "jobs:       ${{ inputs.parallel_jobs }} (0=auto)"
             echo "disk:       ${{ needs.environment.outputs.disk_gb }} GB free at start"
