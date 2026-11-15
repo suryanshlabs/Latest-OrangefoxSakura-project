@@ -397,6 +397,21 @@ jobs:
             exit 1
           fi
 
+          # --- theme diagnostics --------------------------------------------
+          # OrangeFox copies gui/theme/<TW_THEME> into $OUT/recovery/root/twres
+          # at Soong configure time (lunch runs soong_build), reading TW_THEME
+          # from the Soong vendor config namespace twrpVarsPlugin. If that
+          # namespace is empty the copy lands one directory too deep and the
+          # recovery install rule's sed on twres/splash.xml fails at 99%.
+          say "=== theme diagnostics ==="
+          say "include present in BoardConfig.mk: $(grep -c 'BoardConfigSoong' device/xiaomi/sakura/BoardConfig.mk 2>&1)"
+          say "namespace declarations: $(grep -c 'twrpVarsPlugin' vendor/twrp/config/BoardConfigSoong.mk 2>&1)"
+          say "TW_THEME per make: $(get_build_var TW_THEME 2>&1 | tail -1)"
+          say "twres after lunch:"
+          ls -la out/target/product/sakura/recovery/root/twres 2>&1 | head -25 | tee -a "$LOG"
+          say "theme leftovers anywhere in recovery root:"
+          find out/target/product/sakura/recovery/root -maxdepth 3 -name 'splash.xml' -o -maxdepth 3 -name 'ui.xml' 2>/dev/null | head -10 | tee -a "$LOG"
+
           if command -v mka >/dev/null; then MK="mka"; else MK="make"; fi
           echo "==> $MK -j$J recoveryimage"
           "$MK" -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
