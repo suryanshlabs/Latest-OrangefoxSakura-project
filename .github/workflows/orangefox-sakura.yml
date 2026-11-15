@@ -284,9 +284,17 @@ jobs:
           else
             echo "=== reusing existing tree at $SRC (set resync=true to update) ==="
           fi
+          # Informational only: never let a missing/foreign dir fail the sync.
+          # build/ is patched in place and is not a git checkout.
           for p in bootable/recovery vendor/recovery vendor/twrp build; do
             printf '%-22s ' "$p"
-            if [ -d "$SRC/$p" ]; then git -C "$SRC/$p" rev-parse --short HEAD; else echo MISSING; fi
+            if git -C "$SRC/$p" rev-parse --short HEAD >/dev/null 2>&1; then
+              git -C "$SRC/$p" rev-parse --short HEAD
+            elif [ -d "$SRC/$p" ]; then
+              echo "present (not a git checkout)"
+            else
+              echo MISSING
+            fi
           done
 
       - name: Install device tree (never deletes the prebuilt kernel)
