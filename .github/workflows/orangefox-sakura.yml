@@ -1,0 +1,329 @@
+name: OrangeFox sakura (self-hosted)
+
+# Build OrangeFox Recovery for Xiaomi Redmi 6 Pro (sakura) on the ServerHive
+# self-hosted runner.
+#
+# Security: this workflow is MANUAL only. It never runs on pull_request, so
+# untrusted code cannot execute on the self-hosted machine. It also never
+# prints secrets: there are none, and nothing here needs one.
+#
+# Modes:
+#   diagnose -> environment/cgroup/disk report only (fast, safe, run this first)
+#   build    -> sync + compile + verify + upload artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'diagnose = env report only, build = full OrangeFox build'
+        type: choice
+        options: [diagnose, build]
+        default: diagnose
+        required: true
+      source_dir:
+        description: 'Persistent source tree (survives runs; must have >=45GB free)'
+        type: string
+        default: '$HOME/orangefox/fox_12.1'
+        required: false
+      parallel_jobs:
+        description: 'mka -j value (0 = auto from CPU quota, capped for RAM)'
+        type: string
+        default: '0'
+        required: false
+      resync:
+        description: 'Force repo sync even if the tree already exists'
+        type: boolean
+        default: false
+        required: false
+
+# A single self-hosted runner must never run two builds at once.
+concurrency:
+  group: orangefox-sakura-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FOX_BRANCH: "12.1"
+  DEVICE: sakura
+  SYNC_SHA: 73d4d94e0d1b11b9035dea72ee223d25b1fefa7c
+  MIN_DISK_GB: "45"
+
+jobs:
+  environment:
+    name: Environment audit
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    outputs:
+      disk_gb: ${{ steps.res.outputs.disk_gb }}
+      cpu_quota: ${{ steps.res.outputs.cpu_quota }}
+      mem_mb: ${{ steps.res.outputs.mem_mb }}
+      have_sudo: ${{ steps.res.outputs.have_sudo }}
+      source_dir: ${{ steps.res.outputs.source_dir }}
+    steps:
+      - name: Collect host and cgroup limits
+        id: res
+        shell: bash
+        run: |
+          set -uo pipefail
+          SRC='${{ inputs.source_dir }}'
+          SRC="${SRC/#\$HOME/$HOME}"
+          echo "source_dir=$SRC" >> "$GITHUB_OUTPUT"
+
+          echo "=== identity / kernel ==="
+          uname -a; uname -m; id
+          echo "HOME=$HOME"; echo "PWD=$(pwd)"
+
+          echo "=== cpu ==="
+          nproc
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a)"
+          echo "loadavg: $(cat /proc/loadavg)"
+
+          echo "=== memory ==="
+          free -h
+          MEM_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+          echo "cgroup memory.max: $MEM_MAX"
+          if [ "$MEM_MAX" = "max" ]; then
+            mem_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 ))
+          else
+            mem_mb=$(( MEM_MAX / 1024 / 1024 ))
+          fi
+          echo "effective memory: ${mem_mb} MB"
+
+          echo "=== swap ==="
+          swapon --show || echo "no swap"
+          cat /proc/swaps
+
+          echo "=== disk ==="
+          df -h; echo; df -i
+          TARGET_PARENT="$(dirname "$SRC")"
+          mkdir -p "$TARGET_PARENT" 2>/dev/null || true
+          DISK_GB=$(df -BG --output=avail "$TARGET_PARENT" 2>/dev/null | tail -1 | tr -dc '0-9')
+          echo "available for source tree: ${DISK_GB:-0} GB at $TARGET_PARENT"
+
+          echo "=== pids / zombies ==="
+          echo "cgroup pids.max: $(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo n/a)"
+          ps -eo stat= | grep -c '^Z' || true
+          echo "zombie count above (0 = none)"
+
+          echo "=== ulimits ==="
+          ulimit -a
+
+          echo "=== sudo / privileges ==="
+          HAVE_SUDO=no
+          if sudo -n true 2>/dev/null; then HAVE_SUDO=yes; fi
+          echo "passwordless sudo: $HAVE_SUDO"
+
+          echo "=== toolchain presence ==="
+          for t in git curl python3 java javac ccache repo rsync unzip zip bc bison flex \
+                   make gcc g++ lz4 xz openjdk-11-jdk; do
+            printf '%-14s ' "$t"; command -v "$t" || echo MISSING
+          done
+          java -version 2>&1 | head -2 || true
+
+          echo "disk_gb=${DISK_GB:-0}" >> "$GITHUB_OUTPUT"
+          echo "cpu_quota=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo max)" >> "$GITHUB_OUTPUT"
+          echo "mem_mb=$mem_mb" >> "$GITHUB_OUTPUT"
+          echo "have_sudo=$HAVE_SUDO" >> "$GITHUB_OUTPUT"
+
+      - name: Assessment
+        shell: bash
+        run: |
+          set -uo pipefail
+          DISK='${{ steps.res.outputs.disk_gb }}'
+          MEM='${{ steps.res.outputs.mem_mb }}'
+          SUDO='${{ steps.res.outputs.have_sudo }}'
+          echo "disk=${DISK}GB memory=${MEM}MB sudo=${SUDO} need=${MIN_DISK_GB}GB"
+          fail=0
+          [ "${DISK:-0}" -ge "$MIN_DISK_GB" ] || { echo "::error::Not enough disk: ${DISK}GB free, need ${MIN_DISK_GB}GB. Free space or set source_dir to a bigger filesystem."; fail=1; }
+          [ "${MEM:-0}" -ge 7000 ] || echo "::warning::Only ${MEM}MB RAM: the build may be OOM-killed. Add swap or use parallel_jobs=2."
+          [ "$SUDO" = yes ] || echo "::warning::No passwordless sudo: dependency installation will be skipped. Install the packages in documentation/DEPENDENCIES.md manually."
+          exit $fail
+
+  build:
+    name: Sync + build OrangeFox ${{ env.DEVICE }}
+    needs: environment
+    if: ${{ inputs.mode == 'build' }}
+    runs-on: [self-hosted, Linux, X64]
+    # Generous: a cold 45GB sync on a shared box can take hours.
+    timeout-minutes: 720
+    env:
+      SRC: ${{ needs.environment.outputs.source_dir }}
+    steps:
+      - name: Checkout this repository (device tree + tools)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies (best effort, no secrets)
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ '${{ needs.environment.outputs.have_sudo }}' != yes ]; then
+            echo "Skipping apt: no passwordless sudo. See documentation/DEPENDENCIES.md."
+            exit 0
+          fi
+          sudo apt-get update -qq || true
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+            git curl python3 python3-pip rsync unzip zip bc bison build-essential ccache \
+            flex g++-multilib gcc-multilib gnupg gperf imagemagick lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5 libncurses5-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush schedtool squashfs-tools xsltproc zlib1g-dev openjdk-11-jdk \
+            cpio lz4 android-sdk-libsparse-utils 2>&1 | tail -20 || true
+          # OpenJDK 11 is required by the Android 12.1 Soong bootstrap.
+          java -version 2>&1 | head -2
+
+      - name: Ensure repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          if ! command -v repo >/dev/null; then
+            curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+            chmod +x "$HOME/bin/repo"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name  "ServerHive CI" || true
+          git config --global user.email "ci@localhost" || true
+          git config --global --add safe.directory '*' || true
+
+      - name: Sync OrangeFox fox_${{ env.FOX_BRANCH }} (pinned, resumable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$SRC")"
+          if [ ! -d "$SRC/.repo" ]; then
+            echo "=== cold sync into $SRC (this is the slow part) ==="
+            TMP="$(mktemp -d)"
+            git clone https://gitlab.com/OrangeFox/sync.git "$TMP/sync"
+            git -C "$TMP/sync" checkout -q "$SYNC_SHA"
+            "$TMP/sync/orangefox_sync.sh" --branch "$FOX_BRANCH" --path "$SRC"
+            rm -rf "$TMP"
+          elif [ "${{ inputs.resync }}" = "true" ]; then
+            echo "=== forced resync of existing tree ==="
+            ( cd "$SRC" && repo sync --force-sync -c -j"$(nproc)" --no-clone-bundle --no-tags )
+          else
+            echo "=== reusing existing tree at $SRC (set resync=true to update) ==="
+          fi
+          for p in bootable/recovery vendor/recovery vendor/twrp build; do
+            printf '%-22s ' "$p"
+            if [ -d "$SRC/$p" ]; then git -C "$SRC/$p" rev-parse --short HEAD; else echo MISSING; fi
+          done
+
+      - name: Install device tree (never deletes the prebuilt kernel)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$SRC/device/xiaomi/sakura"
+          rsync -a --exclude 'prebuilt/Image.gz-dtb' \
+                "$GITHUB_WORKSPACE/device/xiaomi/sakura/" \
+                "$SRC/device/xiaomi/sakura/"
+          echo "installed device tree; prebuilt present: $([ -f "$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb" ] && echo yes || echo no)"
+
+      - name: Fetch verified sakura kernel (4.9, fscrypt+f2fs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          K="$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb"
+          if [ -f "$K" ]; then
+            echo "kernel already present:"; sha256sum "$K"
+          else
+            ./build/fetch_kernel.sh
+            install -D -m 0644 device/xiaomi/sakura/prebuilt/Image.gz-dtb "$K"
+          fi
+          python3 tools/verify_dtb.py "$K"
+
+      - name: Build
+        id: build
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$SRC"
+          . build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8"
+
+          # Parallelism from the real cgroup quota + RAM, not the host's word.
+          REQ='${{ inputs.parallel_jobs }}'
+          MEM_MB='${{ needs.environment.outputs.mem_mb }}'
+          CPUS="$(nproc)"
+          if [ "$REQ" != "0" ] && [ -n "$REQ" ]; then
+            J="$REQ"
+          else
+            J=$(( MEM_MB / 1800 )); [ "$J" -lt 1 ] && J=1
+            [ "$J" -gt "$CPUS" ] && J="$CPUS"
+            [ "$J" -gt 8 ] && J=8
+          fi
+          echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
+
+          LOG="$GITHUB_WORKSPACE/build.log"
+          echo "==> lunch fox_sakura-eng"
+          lunch fox_sakura-eng 2>&1 | tee "$LOG"
+          echo "==> mka -j$J recoveryimage"
+          mka -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
+          status=${PIPESTATUS[0]}
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" != 0 ]; then
+            echo "::error::Build failed with status $status"
+            grep -nE 'error:|Error [0-9]+|\*\*\* \[|FAILED' "$LOG" | head -60 > errors.txt || true
+            cat errors.txt || true
+          fi
+          exit "$status"
+
+      - name: Verify produced image
+        if: success()
+        shell: bash
+        run: |
+          set -uo pipefail
+          IMG="$SRC/out/target/product/sakura/OrangeFox-unofficial-sakura.img"
+          [ -f "$IMG" ] || IMG="$SRC/out/target/product/sakura/recovery.img"
+          [ -f "$IMG" ] || { echo "::error::no recovery image produced"; ls -l "$SRC/out/target/product/sakura/" 2>/dev/null; exit 1; }
+          echo "image: $IMG ($(stat -c %s "$IMG") bytes)"
+          ./build/verify_image.sh "$SRC" "$IMG" || echo "::warning::structural verification reported issues (see log)"
+
+      - name: Collect metadata and checksums
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts
+          OUT="$SRC/out/target/product/sakura"
+          for f in OrangeFox-unofficial-sakura.img recovery.img; do
+            [ -f "$OUT/$f" ] && cp "$OUT/$f" artifacts/
+          done
+          [ -f "$GITHUB_WORKSPACE/build.log" ] && cp build.log artifacts/ || true
+          [ -f errors.txt ] && cp errors.txt artifacts/ || true
+          {
+            echo "run:        $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo "commit:     $GITHUB_SHA"
+            echo "fox branch: $FOX_BRANCH (sync $SYNC_SHA)"
+            echo "fox release version: $(grep -m1 FOX_BASE_VERSION "$SRC/../../sync"/*.sh 2>/dev/null || echo 'R12.0 (per orangefox_sync.sh)')"
+            echo "device:     $DEVICE"
+            echo "jobs:       ${{ inputs.parallel_jobs }} (0=auto)"
+            echo "disk:       ${{ needs.environment.outputs.disk_gb }} GB free at start"
+            echo "memory:     ${{ needs.environment.outputs.mem_mb }} MB"
+            echo
+            echo "upstream revisions:"
+            for p in bootable/recovery vendor/recovery vendor/twrp; do
+              [ -d "$SRC/$p/.git" ] && echo "  $p $(git -C "$SRC/$p" rev-parse HEAD)"
+            done
+            [ -f "$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb" ] && \
+              echo "  kernel $(sha256sum "$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb" | cut -d' ' -f1)"
+            echo
+            echo "sha256:"
+            ( cd artifacts && sha256sum * 2>/dev/null )
+          } > artifacts/BUILD_METADATA.txt
+          cat artifacts/BUILD_METADATA.txt
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-${{ env.DEVICE }}-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
