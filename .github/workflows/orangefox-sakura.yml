@@ -1,44 +1,54 @@
-name: OrangeFox sakura (self-hosted)
+name: OrangeFox sakura R12.0 (manual production build)
 
-# Build OrangeFox Recovery for Xiaomi Redmi 6 Pro (sakura) on the ServerHive
-# self-hosted runner.
+# One production recovery build for Xiaomi Redmi 6 Pro (sakura), OrangeFox
+# R12.0 / fox_12.1.
 #
-# Security: this workflow is MANUAL only. It never runs on pull_request, so
-# untrusted code cannot execute on the self-hosted machine. It also never
-# prints secrets: there are none, and nothing here needs one.
+# RUNNER
+# ------
+# The expired ServerHive self-hosted runner is NOT used and must not be
+# resurrected from here. `runner_label` selects the machine explicitly, so the
+# workflow is usable on any real Linux x86_64 host you register, or on a
+# GitHub larger runner, without editing the file.
 #
-# Modes:
-#   diagnose -> environment/cgroup/disk report only (fast, safe, run this first)
-#   build    -> sync + compile + verify + upload artifacts
+# `ubuntu-latest` is the default only because it always exists; the preflight
+# measures the actual disk and RAM and STOPS with an actionable error when the
+# machine cannot hold a fox_12.1 sync (>=45 GB free, >=8 GB RAM). No doomed
+# sync is ever started.
+#
+# Exactly one recoveryimage build is attempted per run. There is no diagnostic
+# mode: static checks and the host probe run first and cost minutes.
+#
+# SECURITY
+# --------
+# Manual dispatch only (no pull_request / push trigger), contents: read, no
+# secrets used or printed, builds serialised.
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'diagnose = env report only, build = full OrangeFox build'
-        type: choice
-        options: [diagnose, build]
-        default: diagnose
+      runner_label:
+        description: 'Runner label for a Linux x86_64 host with >=45 GB free disk and >=8 GB RAM'
+        type: string
+        default: 'ubuntu-latest'
         required: true
       source_dir:
-        description: 'Persistent source tree (survives runs; must have >=45GB free)'
+        description: 'Absolute or $HOME-relative OrangeFox tree (>=45 GB free). Reused when it already has .repo'
         type: string
         default: '$HOME/orangefox/fox_12.1'
         required: false
       parallel_jobs:
-        description: 'mka -j value (0 = auto from CPU quota, capped for RAM)'
+        description: 'Build jobs (0 = derive from measured RAM/CPU, capped at 8)'
         type: string
         default: '0'
         required: false
-      resync:
-        description: 'Force repo sync even if the tree already exists'
+      reinstall_device_tree:
+        description: 'Force-copy this repo device tree over the one in the source tree'
         type: boolean
-        default: false
+        default: true
         required: false
 
-# A single self-hosted runner must never run two builds at once.
 concurrency:
-  group: orangefox-sakura-selfhosted
+  group: orangefox-sakura-build
   cancel-in-progress: false
 
 permissions:
@@ -49,20 +59,28 @@ env:
   DEVICE: sakura
   SYNC_SHA: 73d4d94e0d1b11b9035dea72ee223d25b1fefa7c
   MIN_DISK_GB: "45"
+  MIN_MEM_MB: "7000"
 
 jobs:
-  environment:
-    name: Environment audit
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 10
+  preflight:
+    name: Preflight (static checks + host capacity)
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 40
     outputs:
-      disk_gb: ${{ steps.res.outputs.disk_gb }}
-      cpu_quota: ${{ steps.res.outputs.cpu_quota }}
-      mem_mb: ${{ steps.res.outputs.mem_mb }}
-      have_sudo: ${{ steps.res.outputs.have_sudo }}
       source_dir: ${{ steps.res.outputs.source_dir }}
+      disk_gb: ${{ steps.res.outputs.disk_gb }}
+      mem_mb: ${{ steps.res.outputs.mem_mb }}
     steps:
-      - name: Collect host and cgroup limits
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Static regression checks
+        shell: bash
+        run: python3 tools/static_checks.py
+
+      - name: Measure host capacity (hard gate)
         id: res
         shell: bash
         run: |
@@ -71,114 +89,55 @@ jobs:
           SRC="${SRC/#\$HOME/$HOME}"
           echo "source_dir=$SRC" >> "$GITHUB_OUTPUT"
 
-          echo "=== identity / kernel ==="
+          echo "=== host ==="
           uname -a; uname -m; id
           echo "HOME=$HOME"; echo "PWD=$(pwd)"
 
-          echo "=== cpu ==="
-          nproc
-          grep -m1 'model name' /proc/cpuinfo || true
-          echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a)"
+          echo "=== cpu / load ==="
+          nproc; grep -m1 'model name' /proc/cpuinfo || true
           echo "loadavg: $(cat /proc/loadavg)"
 
           echo "=== memory ==="
           free -h
           MEM_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
-          echo "cgroup memory.max: $MEM_MAX"
-          if [ "$MEM_MAX" = "max" ]; then
+          if [ "$MEM_MAX" = "max" ] || [ -z "$MEM_MAX" ]; then
             mem_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 ))
           else
             mem_mb=$(( MEM_MAX / 1024 / 1024 ))
           fi
           echo "effective memory: ${mem_mb} MB"
 
-          echo "=== swap ==="
-          swapon --show || echo "no swap"
-          cat /proc/swaps
-
-          echo "=== disk (top-level mounts only) ==="
-          df -h --output=source,size,used,avail,pcent,target 2>/dev/null \
-            | grep -vE '/run/user|/run/qemu|/sys/firmware|/dev/shm' || df -h
-          TARGET_PARENT="$(dirname "$SRC")"
-          mkdir -p "$TARGET_PARENT" 2>/dev/null || true
-          DISK_GB=$(df -BG --output=avail "$TARGET_PARENT" 2>/dev/null | tail -1 | tr -dc '0-9')
-          echo "available for source tree: ${DISK_GB:-0} GB at $TARGET_PARENT"
-
-          echo "=== pids / zombies ==="
-          echo "cgroup pids.max: $(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo n/a)"
-          ps -eo stat= | grep -c '^Z' || true
-          echo "zombie count above (0 = none)"
-
-          echo "=== ulimits ==="
-          ulimit -a
-
-          echo "=== sudo / privileges ==="
-          HAVE_SUDO=no
-          if sudo -n true 2>/dev/null; then HAVE_SUDO=yes; fi
-          echo "passwordless sudo: $HAVE_SUDO"
-
-          echo "=== toolchain presence ==="
-          for t in git curl python3 java javac ccache repo rsync unzip zip bc bison flex \
-                   make gcc g++ lz4 xz openjdk-11-jdk; do
-            printf '%-14s ' "$t"; command -v "$t" || echo MISSING
-          done
-          java -version 2>&1 | head -2 || true
+          echo "=== disk ==="
+          mkdir -p "$(dirname "$SRC")" 2>/dev/null || true
+          df -h "$(dirname "$SRC")" || df -h
+          DISK_GB=$(df -BG --output=avail "$(dirname "$SRC")" 2>/dev/null | tail -1 | tr -dc '0-9')
+          echo "available for the source tree: ${DISK_GB:-0} GB"
 
           echo "disk_gb=${DISK_GB:-0}" >> "$GITHUB_OUTPUT"
-          echo "cpu_quota=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo max)" >> "$GITHUB_OUTPUT"
           echo "mem_mb=$mem_mb" >> "$GITHUB_OUTPUT"
-          echo "have_sudo=$HAVE_SUDO" >> "$GITHUB_OUTPUT"
 
-      - name: Assessment
-        shell: bash
-        run: |
-          set -uo pipefail
-          DISK='${{ steps.res.outputs.disk_gb }}'
-          MEM='${{ steps.res.outputs.mem_mb }}'
-          SUDO='${{ steps.res.outputs.have_sudo }}'
-          echo "disk=${DISK}GB memory=${MEM}MB sudo=${SUDO} need=${MIN_DISK_GB}GB"
           fail=0
-          [ "${DISK:-0}" -ge "$MIN_DISK_GB" ] || { echo "::error::Not enough disk: ${DISK}GB free, need ${MIN_DISK_GB}GB. Free space or set source_dir to a bigger filesystem."; fail=1; }
-          [ "${MEM:-0}" -ge 7000 ] || echo "::warning::Only ${MEM}MB RAM: the build may be OOM-killed. Add swap or use parallel_jobs=2."
-          [ "$SUDO" = yes ] || echo "::warning::No passwordless sudo: dependency installation will be skipped. Install the packages in documentation/DEPENDENCIES.md manually."
-          exit $fail
+          if [ "${DISK_GB:-0}" -lt "$MIN_DISK_GB" ]; then
+            echo "::error::Not enough disk: ${DISK_GB:-0} GB free at $(dirname "$SRC"), need >=${MIN_DISK_GB} GB."
+            echo "::error::A fox_12.1 sync is ~45 GB and the build output needs room for ~60 GB total."
+            echo "::error::Use a runner with a larger volume (set runner_label to your registered self-hosted host or a larger runner) and re-run."
+            fail=1
+          fi
+          if [ "$mem_mb" -lt "$MIN_MEM_MB" ]; then
+            echo "::error::Not enough RAM: ${mem_mb} MB, need >=${MIN_MEM_MB} MB (Soong will be OOM-killed)."
+            fail=1
+          fi
+          exit "$fail"
 
-  # Fail here in ~30s instead of after a multi-hour sync: a 12.1 Soong build
-  # hard-requires OpenJDK 11 and the core toolchain, and this rented host is
-  # oversubscribed (loadavg ~900) so wasted runs are expensive.
-  preflight:
-    name: Toolchain preflight
-    needs: environment
-    if: ${{ inputs.mode == 'build' }}
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 30
-    steps:
-      - name: Report privileges
-        shell: bash
-        run: |
-          set -uo pipefail
-          if sudo -n true 2>/dev/null; then echo "passwordless sudo: yes"; else echo "passwordless sudo: no"; fi
-          echo "user=$(id -un) home=$HOME"
-          echo "loadavg=$(cat /proc/loadavg)"
-
-      - name: Checkout this repository (for the setup scripts)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Ensure JDK 11 (portable, no sudo needed)
+      - name: Ensure JDK 11 (portable, no root required)
         shell: bash
         run: |
           set -euo pipefail
-          echo "current java: $(java -version 2>&1 | head -1 || echo none)"
-          # The runner has JDK 21 and no passwordless sudo, so a system JDK 11
-          # cannot be installed. setup_jdk11.sh falls back to a Temurin 11
-          # tarball in $HOME, which is all Soong needs.
           JH="$(./build/setup_jdk11.sh)"
           echo "JAVA_HOME=$JH"
           "$JH/bin/java" -version 2>&1 | head -1
 
-      - name: Require core build packages
+      - name: Require the core build toolchain
         shell: bash
         run: |
           set -uo pipefail
@@ -186,40 +145,27 @@ jobs:
           missing() { for c in $CMDS; do command -v "$c" >/dev/null || echo "$c"; done; }
           M="$(missing)"
           if [ -n "$M" ]; then
-            echo "missing tools: $M"
-            if sudo -n true 2>/dev/null; then
-              sudo apt-get update -qq || true
-              # Best effort: some names differ across Ubuntu releases (t64 transition).
-              DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-                git curl python3 rsync unzip zip bc bison build-essential ccache flex \
-                g++-multilib gcc-multilib libssl-dev zlib1g-dev libelf-dev liblz4-tool \
-                lzop pngcrush schedtool xsltproc cpio lz4 android-sdk-libsparse-utils || true
-            fi
-            N="$(missing)"
-            if [ -n "$N" ]; then
-              echo "::error::Missing build tools: $N. Install them on the runner (needs sudo) and re-run."
-              exit 1
-            fi
+            echo "::error::Missing build tools: $M"
+            echo "::error::They need root once on this host: see documentation/DEPENDENCIES.md section 1."
+            exit 1
           fi
           echo "core toolchain OK"
 
   build:
-    # NOTE: env context is NOT available in jobs.<id>.name, so no ${{ env.* }} here.
-    name: Sync and build OrangeFox sakura
-    needs: [environment, preflight]
-    if: ${{ inputs.mode == 'build' }}
-    runs-on: [self-hosted, Linux, X64]
-    # Generous: a cold 45GB sync on a shared box can take hours.
-    timeout-minutes: 720
+    name: Sync, build and verify OrangeFox sakura
+    needs: preflight
+    runs-on: ${{ inputs.runner_label }}
+    # A cold ~45 GB sync plus a 12.1 Soong build on a shared host.
+    timeout-minutes: 900
     env:
-      SRC: ${{ needs.environment.outputs.source_dir }}
+      SRC: ${{ needs.preflight.outputs.source_dir }}
     steps:
       - name: Checkout this repository (device tree + tools)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Ensure JDK 11 (portable, no sudo needed)
+      - name: Ensure JDK 11 and export it
         shell: bash
         run: |
           set -euo pipefail
@@ -231,18 +177,6 @@ jobs:
           echo "$JH/bin" >> "$GITHUB_PATH"
           "$JH/bin/java" -version 2>&1 | head -1
 
-      - name: Install extra dependencies (best effort)
-        shell: bash
-        run: |
-          set -uo pipefail
-          if [ '${{ needs.environment.outputs.have_sudo }}' != yes ]; then
-            echo "Skipping apt extras: no passwordless sudo (core toolchain already verified)."
-            exit 0
-          fi
-          sudo apt-get install -y --no-install-recommends \
-            libxml2 libxml2-utils imagemagick gnupg gperf \
-            lib32z1-dev squashfs-tools libncurses5-dev 2>&1 | tail -10 || true
-
       - name: Ensure repo tool
         shell: bash
         run: |
@@ -253,296 +187,67 @@ jobs:
             chmod +x "$HOME/bin/repo"
           fi
           echo "$HOME/bin" >> "$GITHUB_PATH"
-          git config --global user.name  "ServerHive CI" || true
-          git config --global user.email "ci@localhost" || true
           git config --global --add safe.directory '*' || true
 
-      - name: Sync OrangeFox fox_${{ env.FOX_BRANCH }} (pinned, resumable)
+      - name: Sync fox_12.1 (pinned) or reuse the existing tree
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$(dirname "$SRC")"
-          SYNC_CLONE="$(dirname "$SRC")/sync"
           if [ ! -d "$SRC/.repo" ]; then
-            echo "=== cold sync into $SRC (this is the slow part) ==="
-            if [ ! -d "$SYNC_CLONE/.git" ]; then
-              git clone https://gitlab.com/OrangeFox/sync.git "$SYNC_CLONE"
-            fi
-            git -C "$SYNC_CLONE" checkout -q "$SYNC_SHA" \
-              || { echo "::error::cannot check out pinned sync commit $SYNC_SHA"; exit 1; }
-            # orangefox_sync.sh resolves its patches from $PWD (BASE_DIR="$PWD"),
-            # so it MUST be run from inside the clone, not from the workspace.
-            PATCH="$SYNC_CLONE/patches/patch-manifest-fox_$FOX_BRANCH.diff"
-            if [ ! -f "$PATCH" ]; then
-              echo "::error::sync clone has no $PATCH"
-              exit 1
-            fi
-            ( cd "$SYNC_CLONE" && ./orangefox_sync.sh --branch "$FOX_BRANCH" --path "$SRC" )
-          elif [ "${{ inputs.resync }}" = "true" ]; then
-            echo "=== forced resync of existing tree ==="
-            ( cd "$SRC" && repo sync --force-sync -c -j"$(nproc)" --no-clone-bundle --no-tags )
+            echo "=== cold sync into $SRC (the slow part) ==="
+            ./build/sync.sh "$SRC"
           else
-            echo "=== reusing existing tree at $SRC (set resync=true to update) ==="
+            echo "=== reusing existing tree at $SRC ==="
+            ./build/sync.sh --relink-only "$SRC" 2>/dev/null || true
           fi
-          # Informational only: never let a missing/foreign dir fail the sync.
-          # build/ is patched in place and is not a git checkout.
-          for p in bootable/recovery vendor/recovery vendor/twrp build; do
-            printf '%-22s ' "$p"
-            if git -C "$SRC/$p" rev-parse --short HEAD >/dev/null 2>&1; then
-              git -C "$SRC/$p" rev-parse --short HEAD
-            elif [ -d "$SRC/$p" ]; then
-              echo "present (not a git checkout)"
-            else
-              echo MISSING
-            fi
-          done
 
-      - name: Install device tree (never deletes the prebuilt kernel)
+      - name: Install this repository's device tree
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$SRC/device/xiaomi/sakura"
-          rsync -a --exclude 'prebuilt/Image.gz-dtb' \
-                "$GITHUB_WORKSPACE/device/xiaomi/sakura/" \
-                "$SRC/device/xiaomi/sakura/"
-          echo "installed device tree; prebuilt present: $([ -f "$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb" ] && echo yes || echo no)"
+          if [ '${{ inputs.reinstall_device_tree }}' = 'true' ] || [ ! -d "$SRC/device/xiaomi/sakura" ]; then
+            mkdir -p "$SRC/device/xiaomi/sakura"
+            # --exclude keeps any already-fetched kernel blob in the tree.
+            rsync -a --exclude 'prebuilt/Image.gz-dtb' \
+                  "$GITHUB_WORKSPACE/device/xiaomi/sakura/" \
+                  "$SRC/device/xiaomi/sakura/"
+            echo "device tree installed"
+          else
+            echo "device tree already present; left untouched"
+          fi
 
-      - name: Fetch verified sakura kernel (4.9, fscrypt+f2fs)
+      - name: Ensure the verified sakura kernel
         shell: bash
         run: |
           set -euo pipefail
           K="$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb"
           if [ -f "$K" ]; then
-            echo "kernel already present:"; sha256sum "$K"
+            echo "kernel present in tree:"; sha256sum "$K"
           else
             ./build/fetch_kernel.sh
-            install -D -m 0644 device/xiaomi/sakura/prebuilt/Image.gz-dtb "$K"
           fi
           python3 tools/verify_dtb.py "$K"
+          ./build/check_crypto_blobs.sh "$SRC" || true
 
-      - name: Build
-        id: build
+      - name: Build recoveryimage (single production build)
         shell: bash
         run: |
-          # GitHub runs bash steps as `bash -e ...`; errexit is inherited, so
-          # turn it off explicitly and check every status we care about.
-          set +e
-          # nounset MUST be off: build/envsetup.sh reads unset variables (TOP,
-          # ZSH_VERSION, ...) and aborts under `set -u` before defining lunch().
-          set +u
           set -o pipefail
-          cd "$SRC" || exit 1
+          OUT="$SRC/out/target/product/sakura"
+          # A stale image must never be able to satisfy the verifier.
+          rm -f "$OUT/OrangeFox-unofficial-sakura.img" "$OUT/recovery.img"
+          PARALLEL_JOBS='${{ inputs.parallel_jobs }}' \
+            ./build/build.sh "$SRC" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          exit "${PIPESTATUS[0]}"
 
-          # Everything here is also written to build.log, which the artifact
-          # step uploads - the step's own console log is too long to read back.
-          LOG="$GITHUB_WORKSPACE/build.log"
-          say() { echo "$@" | tee -a "$LOG"; }
-
-          : > "$LOG"
-          say "=== pwd: $(pwd) ==="
-          say "=== build step paths (for diagnostics) ==="
-          say "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-<unset>}"
-          say "PWD=$(pwd)"
-          say "SRC=${SRC:-<unset>}"
-          say "LOG=${LOG}"
-
-          say "=== top level ==="
-          ls -1 2>&1 | head -20 | tee -a "$LOG"
-          say "=== build/ layout ==="
-          ls -l build/envsetup.sh build/make/envsetup.sh 2>&1 | head -5 | tee -a "$LOG"
-
-          # Prefer the portable JDK 11 installed earlier; ensure it wins in PATH.
-          if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-            export PATH="$JAVA_HOME/bin:$PATH"
-          fi
-          export JAVA_HOME ANDROID_JAVA_HOME
-
-          say "=== toolchain (before envsetup) ==="
-          say "JAVA_HOME=${JAVA_HOME:-<unset>}"
-          say "ANDROID_JAVA_HOME=${ANDROID_JAVA_HOME:-<unset>}"
-          say "which java: $(command -v java 2>/dev/null || echo NOT FOUND)"
-          java -version 2>&1 | head -2 | tee -a "$LOG"
-          say "python3: $(python3 --version 2>&1)"
-
-          # Helper log files beside build.log so artifacts can carry diagnostics.
-          HelperDir="$(dirname "$LOG")"
-          ENV_OUT="$HelperDir/envsetup_out.log"
-          ENV_ERR="$HelperDir/envsetup_err.log"
-          : > "$ENV_OUT"
-          : > "$ENV_ERR"
-
-          # NOTE: sourced directly (never through a pipe - a pipeline would run
-          # envsetup.sh in a subshell and lunch() would vanish).
-          if [ -f build/envsetup.sh ]; then
-            ESCRIPT=build/envsetup.sh
-          elif [ -f build/make/envsetup.sh ]; then
-            ESCRIPT=build/make/envsetup.sh
-          else
-            say "=== build/ contents ==="
-            ls build 2>&1 | head -40 | tee -a "$LOG"
-            echo "::error::no envsetup.sh under $SRC/build (see build.log)"
-            exit 1
-          fi
-
-          say "=== sourcing $ESCRIPT ==="
-          # Run with bash tracing to a trace file so the failing line is visible
-          # even when envsetup.sh writes little/no stderr.
-          TRACE="$HelperDir/envsetup_trace.log"
-          : > "$TRACE"
-          BASH_XTRACEFD=19
-          exec 19>"$TRACE"
-          set -x
-          . "$ESCRIPT" >"$ENV_OUT" 2>"$ENV_ERR"; ES=$?
-          set +x
-          exec 19>&-
-
-          say "envsetup.sh exit status: $ES"
-          say "envsetup log sizes: out=$(wc -c < "$ENV_OUT" 2>/dev/null || echo 0) bytes, err=$(wc -c < "$ENV_ERR" 2>/dev/null || echo 0) bytes, trace=$(wc -c < "$TRACE" 2>/dev/null || echo 0) bytes"
-
-          if [ "$ES" != 0 ]; then
-            say "=== envsetup.sh stdout (last 120 lines) ==="
-            tail -120 "$ENV_OUT" 2>&1 | tee -a "$LOG"
-            say "=== envsetup.sh stderr (last 200 lines) ==="
-            tail -200 "$ENV_ERR" 2>&1 | tee -a "$LOG"
-            say "=== envsetup.sh trace (last 120 lines) ==="
-            tail -120 "$TRACE" 2>&1 | tee -a "$LOG"
-            say "=== environment snapshot after failure ==="
-            say "TOP=${TOP:-<unset>} ANDROID_BUILD_TOP=${ANDROID_BUILD_TOP:-<unset>}"
-            say "pwd=$(pwd)"
-            say "which java: $(command -v java 2>/dev/null || echo NOT FOUND)"
-            java -version 2>&1 | head -2 | tee -a "$LOG"
-            df -h . 2>&1 | tail -3 | tee -a "$LOG"
-            echo "::error::envsetup.sh failed with status $ES (see build.log and envsetup_* logs in artifact)"
-            exit 1
-          fi
-
-          # Persist helper logs into build.log tail for visibility too.
-          say "=== envsetup.sh stdout (last 40 lines) ==="
-          tail -40 "$ENV_OUT" 2>&1 | tee -a "$LOG"
-
-          if ! command -v lunch >/dev/null 2>&1; then
-            say "=== envsetup.sh did not define lunch() ==="
-            tail -120 "$ENV_ERR" 2>&1 | tee -a "$LOG"
-            tail -120 "$TRACE" 2>&1 | tee -a "$LOG"
-            echo "::error::envsetup.sh did not define lunch() (see build.log)"
-            exit 1
-          fi
-
-          echo "lunch: $(command -v lunch || echo 'NOT FOUND')"
-          echo "mka:   $(command -v mka || echo 'NOT FOUND (will fall back to make)')"
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export LC_ALL=C
-          export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8"
-
-          # Parallelism from the real cgroup quota + RAM, not the host's word.
-          REQ='${{ inputs.parallel_jobs }}'
-          MEM_MB='${{ needs.environment.outputs.mem_mb }}'
-          CPUS="$(nproc)"
-          if [ "$REQ" != "0" ] && [ -n "$REQ" ]; then
-            J="$REQ"
-          else
-            J=$(( MEM_MB / 1800 )); [ "$J" -lt 1 ] && J=1
-            [ "$J" -gt "$CPUS" ] && J="$CPUS"
-            [ "$J" -gt 8 ] && J=8
-          fi
-          echo "building with -j$J (cpus=$CPUS mem=${MEM_MB}MB)"
-
-          say "==> lunch fox_sakura-eng"
-          lunch fox_sakura-eng 2>&1 | tee -a "$LOG"
-          LUNCH_STATUS=${PIPESTATUS[0]}
-          if [ "$LUNCH_STATUS" != 0 ]; then
-            echo "::error::lunch fox_sakura-eng failed with status $LUNCH_STATUS"
-            exit 1
-          fi
-
-          say "TARGET_PRODUCT=${TARGET_PRODUCT:-<unset>} TARGET_BUILD_VARIANT=${TARGET_BUILD_VARIANT:-<unset>} TW_THEME=${TW_THEME:-<unset>}"
-
-          say "=== populating OrangeFox theme into recovery/root/twres ==="
-          THEME_SRC="bootable/recovery/gui/theme"
-          if ! command -v get_build_var >/dev/null 2>&1; then
-            say "::warning::get_build_var not available; theme copy skipped (will re-run next build if TW_THEME is later known)"
-          else
-            TW_THEME_VAL="$(get_build_var TW_THEME 2>/dev/null | tail -1 | tr -d '[:space:]' )"
-            say "TW_THEME resolved to: ${TW_THEME_VAL:-<empty>}"
-            if [ -n "${TW_THEME_VAL}" ] && [ -d "${THEME_SRC}/${TW_THEME_VAL}" ]; then
-              TW_RES="out/target/product/sakura/recovery/root/twres"
-              mkdir -p "$TW_RES"
-
-              # Per-theme files: splash.xml, ui.xml and the theme subdirs.
-              for sub in "$THEME_SRC/$TW_THEME_VAL"/*; do
-                bn="$(basename "$sub")"
-                if [ -f "$sub" ]; then
-                  cp -f "$sub" "$TW_RES/$bn"
-                elif [ -d "$sub" ]; then
-                  cp -a "$sub" "$TW_RES/$bn"
-                fi
-              done
-
-              # Common theme resources (fonts and languages) that every theme uses.
-              for sub in "$THEME_SRC/common"/*; do
-                bn="$(basename "$sub")"
-                if [ -d "$sub" ]; then
-                  cp -a "$sub" "$TW_RES/$bn"
-                fi
-              done
-
-              # Optional extra languages, gated on TW_EXTRA_LANGUAGES (matches the
-              # recovery module's own logic).
-              if [ "${TW_EXTRA_LANGUAGES}" = "true" ]; then
-                for sub in "$THEME_SRC/extra-languages"/*; do
-                  bn="$(basename "$sub")"
-                  if [ -d "$sub" ]; then
-                    cp -a "$sub" "$TW_RES/$bn"
-                  fi
-                done
-              fi
-
-              # Verify the two files the recovery install recipe actually touches.
-              if [ ! -f "$TW_RES/splash.xml" ] || [ ! -f "$TW_RES/ui.xml" ]; then
-                say "::error::OrangeFox theme copy did not produce the files the recovery install recipe needs"
-                say "      twres/ contents: $(ls -1 "$TW_RES" 2>/dev/null | tr '\n' ' ' )"
-                say "      expected splash.xml + ui.xml under: $TW_RES"
-                say "      theme source dir: $THEME_SRC/$TW_THEME_VAL"
-                say "      files present in source:"
-                say "        $(ls -1 "$THEME_SRC/$TW_THEME_VAL" 2>/dev/null | tr '\n' ' ' )"
-                exit 1
-              fi
-              say "OrangeFox theme populated into $TW_RES ($(ls -1 "$TW_RES" 2>/dev/null | wc -l) entries)"
-            else
-              say "::warning::TW_THEME value '${TW_THEME_VAL}' did not resolve to a theme dir at $THEME_SRC/${TW_THEME_VAL}; theme copy skipped"
-              say "      Tried: $THEME_SRC/${TW_THEME_VAL}"
-              say "      This will re-run on the next build once TW_THEME is known."
-            fi
-          fi
-
-          if command -v mka >/dev/null; then MK="mka"; else MK="make"; fi
-          echo "==> $MK -j$J recoveryimage"
-          "$MK" -j"$J" recoveryimage 2>&1 | tee -a "$LOG"
-          status=${PIPESTATUS[0]}
-
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          # Did the theme survive into the install step?
-          say "twres after make:"
-          ls -la out/target/product/sakura/recovery/root/twres 2>&1 | head -25 | tee -a "$LOG"
-          if [ "$status" != 0 ]; then
-            echo "::error::Build failed with status $status"
-            grep -nE 'error:|Error [0-9]+|\*\*\* \[|FAILED' "$LOG" | head -60 > errors.txt || true
-            cat errors.txt || true
-          fi
-          exit "$status"
-
-      - name: Verify produced image
-        if: success()
+      - name: Verify the produced image (hard gate)
         shell: bash
         run: |
-          set -uo pipefail
-          IMG="$SRC/out/target/product/sakura/OrangeFox-unofficial-sakura.img"
-          [ -f "$IMG" ] || IMG="$SRC/out/target/product/sakura/recovery.img"
-          [ -f "$IMG" ] || { echo "::error::no recovery image produced"; ls -l "$SRC/out/target/product/sakura/" 2>/dev/null; exit 1; }
-          echo "image: $IMG ($(stat -c %s "$IMG") bytes)"
-          ./build/verify_image.sh "$SRC" "$IMG" || echo "::warning::structural verification reported issues (see log)"
+          set -o pipefail
+          ./build/verify_image.sh "$SRC" 2>&1 | tee "$GITHUB_WORKSPACE/verify.log"
+          exit "${PIPESTATUS[0]}"
 
-      - name: Collect metadata and checksums
+      - name: Collect image, checksums, metadata and logs
         if: always()
         shell: bash
         run: |
@@ -550,23 +255,22 @@ jobs:
           mkdir -p artifacts
           OUT="$SRC/out/target/product/sakura"
           for f in OrangeFox-unofficial-sakura.img recovery.img; do
-            [ -f "$OUT/$f" ] && cp "$OUT/$f" artifacts/
+            [ -f "$OUT/$f" ] && cp "$OUT/$f" artifacts/ || true
           done
-          for f in "$GITHUB_WORKSPACE/build.log" "$GITHUB_WORKSPACE/errors.txt" \
-                   "$GITHUB_WORKSPACE/envsetup_out.log" "$GITHUB_WORKSPACE/envsetup_err.log" \
-                   "$GITHUB_WORKSPACE/envsetup_trace.log"; do
-            [ -f "$f" ] && cp "$f" artifacts/ || true
+          for f in build.log verify.log errors.txt; do
+            [ -f "$GITHUB_WORKSPACE/$f" ] && cp "$GITHUB_WORKSPACE/$f" artifacts/ || true
           done
+          python3 tools/static_checks.py > artifacts/static-checks.log 2>&1 || true
           {
-            echo "run:        $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
-            echo "commit:     $GITHUB_SHA"
-            echo "fox branch: $FOX_BRANCH (sync $SYNC_SHA)"
-            echo "fox release version: $(grep -m1 FOX_BASE_VERSION "$(dirname "$SRC")/sync/orangefox_sync.sh" 2>/dev/null || echo 'unknown')"
-            echo "sync tooling: $(git -C "$(dirname "$SRC")/sync" rev-parse HEAD 2>/dev/null || echo 'not cloned')"
-            echo "device:     $DEVICE"
-            echo "jobs:       ${{ inputs.parallel_jobs }} (0=auto)"
-            echo "disk:       ${{ needs.environment.outputs.disk_gb }} GB free at start"
-            echo "memory:     ${{ needs.environment.outputs.mem_mb }} MB"
+            echo "run:            $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+            echo "commit:         $GITHUB_SHA"
+            echo "runner_label:   ${{ inputs.runner_label }}"
+            echo "fox branch:     $FOX_BRANCH (sync $SYNC_SHA)"
+            echo "fox release:    $(grep -m1 FOX_BASE_VERSION "$(dirname "$SRC")/sync/orangefox_sync.sh" 2>/dev/null || echo 'unknown')"
+            echo "device:         $DEVICE"
+            echo "jobs:           ${{ inputs.parallel_jobs }} (0=auto)"
+            echo "disk at start:  ${{ needs.preflight.outputs.disk_gb }} GB"
+            echo "memory:         ${{ needs.preflight.outputs.mem_mb }} MB"
             echo
             echo "upstream revisions:"
             for p in bootable/recovery vendor/recovery vendor/twrp; do

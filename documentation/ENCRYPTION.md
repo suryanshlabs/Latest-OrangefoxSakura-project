@@ -124,10 +124,24 @@ hardware, and the blocker is architectural, not a build flag:
 
 | Item | Status |
 |---|---|
-| FDE footer decryption | **not tested** (no hardware) — same mechanism as R11, expected to work |
+| fstab flags parse as separate tokens | **fixed + statically enforced** — comma-separated; `tools/static_checks.py` and `build/verify_image.sh` fail on `;` |
+| FDE footer decryption | **not tested** (no hardware); same mechanism as R11 |
 | FBE (ICE) decryption | **not tested**; kernel capability verified by string evidence only |
 | Metadata encryption | **not supportable** — proven absent from both kernels |
+| Keymaster 3.0 / Gatekeeper 1.0 / qseecomd present | **missing in the audited image** — see `IMAGE_AUDIT.md`; blobs are proprietary and not committed |
 | Keymaster 3.0 service start in recovery | **not tested** |
+
+Consequence: with the QTI blobs absent, **no decryption capability is claimed
+for any image built from this tree**. The fstab declares both mechanisms so a
+build that *does* include the extracted blobs can attempt them, and
+`build/check_crypto_blobs.sh` / `build/verify_image.sh` state that status
+plainly instead of inferring success from a flag.
+
+One further caution, learned from the audited image: FBE without a working
+gatekeeper/keymaster chain makes TWRP block on the splash instead of failing
+cleanly. If you build without the blobs and `/data` is FBE-encrypted, expect
+that behaviour; the documented workaround is `Format Data` (data loss) or
+building with `OF_SKIP_FBE_DECRYPTION=1` for that ROM generation.
 
 Never advertise decryption as working until `testing/android-*/` records a real
 `Decryption tested` result.

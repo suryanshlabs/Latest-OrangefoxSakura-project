@@ -14,6 +14,23 @@
 #
 # These are Xiaomi/Qualcomm proprietary binaries. They are NOT redistributed by
 # this repository; extract them from your own device/stock image.
+#
+# DESTINATION PATHS: nothing in this file creates files. Whatever you extract
+# must land at the path the recovery init rc actually executes. fox_12.1's
+# recovery root uses /system/bin for Android 12+ services, while the legacy
+# imports in this device tree still read /sbin. The undecided part is exactly
+# the sbin-vs-system/bin question, so before extracting run:
+#
+#     ./build/check_crypto_blobs.sh /path/to/fox_12.1
+#
+# It prints which of these are missing AND which paths the synced
+# vendor/recovery + bootable/recovery init rc files reference. Place the blobs
+# at those referenced paths (and verify each one's DT_NEEDED libraries resolve
+# inside the ramdisk), then update the destinations below to match.
+#
+# STATUS: with this list unpopulated, DECRYPTION IS UNVERIFIED. Do not report
+# FDE or FBE as working for an image built from a tree without these blobs.
+# Evidence for why: documentation/IMAGE_AUDIT.md.
 
 # --- TEE / keymaster / gatekeeper services ---------------------------------
 vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti:recovery/root/sbin/android.hardware.gatekeeper@1.0-service-qti

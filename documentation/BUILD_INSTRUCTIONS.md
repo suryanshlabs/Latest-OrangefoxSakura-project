@@ -9,6 +9,33 @@
 * packages: see `DEPENDENCIES.md` §1
 * `repo` from `https://storage.googleapis.com/git-repo-downloads/repo`
 
+## 1b. One command (recommended)
+
+```bash
+./build/run-all.sh "$HOME/orangefox/fox_12.1"
+```
+
+That is the whole build: static checks → pinned sync (unless the tree already
+exists) → kernel fetch + DTB verification → crypto-chain report → one
+`recoveryimage` build → hard structural verification. It stops at the first
+failure and prints the image path plus SHA-256.
+
+The sections below are the same steps broken out, for debugging or for running
+them individually.
+
+### Which runner / machine
+
+The workflow targets whatever `runner_label` you dispatch it with; it no longer
+assumes the expired ServerHive self-hosted runner. Standard `ubuntu-latest`
+GitHub-hosted runners usually have far less than the 45 GB this sync needs, so
+the workflow's preflight measures disk and RAM and **fails immediately with an
+actionable message** rather than starting a doomed sync. Point `runner_label` at
+any Linux x86_64 machine you register as a self-hosted runner (>=45 GB free,
+>=8 GB RAM, packages from `DEPENDENCIES.md` §1).
+
+Android/Termux hosts (including a Poco F1 running Termux) are **not** supported
+build environments for this tree and no support is claimed for them.
+
 ## 2. Reference analysis first (cheap, 2 minutes)
 
 ```bash
@@ -95,17 +122,23 @@ the ramdisk (i.e. the vendor patch applied).
 
 A PASS here means **structurally correct**, not bootable.
 
-## 7. Why this environment cannot build it
+## 7. Build status and the current environment
 
-The Cloud workspace used for this analysis has **9.5 GB free, 3.8 GB RAM,
-2 vCPU, no root, and no `java`/`cpio`/`lz4`**, versus the ≥45 GB and 8–16 GB
-RAM the build needs, and `repo sync` alone is documented as taking hours.
-Therefore: **no build was attempted here and none is claimed.** What this
-environment *can* do — and did — is the full reference reverse-engineering,
-source audit, device-tree development and structural verification tooling,
-all of which are dependency-free.
+**No recovery image has been built from this tree.** The previous builds ran on
+the ServerHive self-hosted runner, which has expired; the workflow no longer
+references it. The analysis workspace used for these edits is also not a build
+host (no 45 GB of volume, and no Android toolchain), so nothing beyond static
+checks was executed there.
 
-To build, run steps 1–6 on a machine meeting §1.
+What *has* been executed and can be re-executed anywhere:
+
+```bash
+python3 tools/static_checks.py          # configuration regression gate
+bash -n build/*.sh                      # shell syntax
+./build/check_crypto_blobs.sh           # which proprietary blobs are missing
+```
+
+To build, use `./build/run-all.sh` (§1b) on a machine meeting §1.
 
 ## 8. Reproducing a signed official-style release
 

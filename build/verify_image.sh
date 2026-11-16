@@ -78,15 +78,69 @@ for f in \
     fi
 done
 
-if grep -rqs 'fileencryption=ice' "$TMP/rd" 2>/dev/null; then
-    ok "FBE (fileencryption=ice) configured"
+# --- fstab fs_mgr flag regression gate ------------------------------------
+# AOSP fs_mgr splits the fs_mgr flags column on commas only. A ';' would make
+# "encryptable=footer;fileencryption=ice" one malformed token and silently
+# disable BOTH mechanisms, which is exactly the defect that shipped in the
+# audited image. Check the ramdisk the device will actually parse.
+echo "==> installed fstab flags"
+FSTABS=$(find "$TMP/rd" -name 'recovery.fstab' 2>/dev/null || true)
+if [ -z "$FSTABS" ]; then
+    bad "no recovery.fstab found in the ramdisk (TARGET_RECOVERY_FSTAB not installed)"
 else
-    bad "no fileencryption=ice found - FBE will not work"
+    for f in $FSTABS; do
+        echo "    $(echo "$f" | sed "s|$TMP/rd||")"
+    done
+    # Comments must not be able to satisfy (or trip) these checks: the audited
+    # handoff image contained the words "fileencryption=ice" only inside a
+    # comment explaining that it had been removed.
+    ACTIVE="$TMP/fstab_active"
+    cat $FSTABS | sed 's/#.*//' | grep -v '^[[:space:]]*$' > "$ACTIVE"
+
+    if grep -qhE 'encryptable=footer;|;fileencryption=' "$ACTIVE"; then
+        bad "semicolon-delimited fs_mgr flags in the installed fstab (must be commas)"
+    else
+        ok "installed fstab uses comma-separated fs_mgr flags"
+    fi
+    if grep -qh 'encryptable=footer' "$ACTIVE" && grep -qh 'fileencryption=ice' "$ACTIVE"; then
+        ok "installed /data carries both FDE and FBE tokens"
+    else
+        bad "installed fstab is missing encryptable=footer and/or fileencryption=ice"
+    fi
 fi
-if grep -rqs 'encryptable=footer' "$TMP/rd" 2>/dev/null; then
+
+if grep -qhs 'fileencryption=ice' "$TMP/fstab_active" 2>/dev/null; then
+    ok "FBE (fileencryption=ice) configured in the installed fstab"
+else
+    bad "no fileencryption=ice in the installed fstab - FBE cannot work"
+fi
+if grep -qhs 'encryptable=footer' "$TMP/fstab_active" 2>/dev/null; then
     ok "legacy FDE (encryptable=footer) retained"
 else
     echo "  [warn] encryptable=footer not found (Android 9 FDE ROMs unsupported)"
+fi
+
+# --- QTI crypto chain presence (reported, not claimed) --------------------
+# The blobs are proprietary and are NOT in this repository. Their absence is
+# what made the audited handoff image unable to decrypt anything, so report it
+# explicitly rather than inferring a working crypto path from the fstab.
+echo "==> QTI crypto chain"
+crypto_found=0
+crypto_missing=""
+for b in qseecomd android.hardware.keymaster@3.0-service-qti \
+         android.hardware.gatekeeper@1.0-service-qti; do
+    if find "$TMP/rd" -name "$b" 2>/dev/null | grep -q .; then
+        echo "  [info] present: $b"
+        crypto_found=$((crypto_found + 1))
+    else
+        crypto_missing="$crypto_missing $b"
+    fi
+done
+if [ "$crypto_found" = 3 ]; then
+    echo "  [info] chain present - but decryption is still UNTESTED on hardware"
+else
+    echo "  [info] missing:$crypto_missing"
+    echo "  [info] DECRYPTION: UNVERIFIED - extract the blobs (documentation/DEPENDENCIES.md section 4)"
 fi
 grep -rqs 'metadata_encryption' "$TMP/rd" 2>/dev/null \
     && echo "  [warn] metadata_encryption present - NOT supportable on sakura, remove it"

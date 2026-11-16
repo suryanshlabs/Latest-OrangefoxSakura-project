@@ -25,6 +25,31 @@ the device configuration and **"Research only"** for runtime behaviour.
 | 11 | Build scripts syntax | `bash -n build/*.sh` | **PASS** (all 5) |
 | 12 | Upstream refs | `git ls-remote`, GitLab/GitHub API | **PASS** — all SHAs in `SOURCE_AUDIT.md` resolved live |
 
+## 1b. Static checks executed for the current tree (no build)
+
+Run on the committed tree; re-runnable anywhere with `python3` and `bash`:
+
+```bash
+python3 tools/static_checks.py
+bash -n build/*.sh
+./build/check_crypto_blobs.sh
+```
+
+| Check | Result |
+|---|---|
+| `fstab`: no `;` delimiters in the fs_mgr flags column | PASS (was `encryptable=footer;fileencryption=ice`, now commas) |
+| `fstab`: `/data` rows keep `encryptable=footer` and `fileencryption=ice` as separate tokens | PASS (2 rows: f2fs + ext4) |
+| `fstab`/`twrp.flags`: no `metadata_encryption` | PASS |
+| `BoardConfig.mk`: recovery partition 64 MiB, fstab path exists, `TW_THEME` set, soong theme export included, QCOM FBE enabled, metadata partition disabled | PASS |
+| `fox_sakura.mk` inherits `vendor/twrp/config/common.mk`; `fox_sakura-eng` is a lunch target | PASS |
+| `vendorsetup.sh`: sakura device guard, FBE not skipped, keymaster 3.0 pinned | PASS |
+| workflow: manual only, runner selectable (no ServerHive self-hosted label), verification is a hard gate, artifacts uploaded on failure, stale image removed, static checks wired in | PASS |
+| all `build/*.sh` pass `bash -n` | PASS |
+| QTI crypto blob availability | **16 of 16 listed blobs absent** — decryption reported as UNVERIFIED (see `IMAGE_AUDIT.md`) |
+
+What this does **not** prove: that the source syncs, that Soong builds, that the
+image boots, or that any decryption works.
+
 ## 2. What was NOT executed
 
 | Not done | Why |

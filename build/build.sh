@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 #
-# build.sh - build OrangeFox R12.0 for sakura.
+# build.sh - build OrangeFox R12.0 (fox_12.1) for sakura.
 #
 # Usage: ./build/build.sh /absolute/path/to/fox_12.1 [target]
 #        target defaults to recoveryimage
+#
+# This script is the single source of truth for a build: the GitHub workflow
+# calls it too, so a local run and a CI run execute the same commands.
+#
+# It hard-fails (never warns) when:
+#   * the tree is missing, the prebuilt kernel is missing, or disk is short;
+#   * build/envsetup.sh cannot be sourced (the failure that produced
+#     TARGET_PRODUCT=aosp_arm and the "Could not find ui.xml for TW_THEME"
+#     Soong error in earlier runs);
+#   * lunch does not select fox_sakura-eng;
+#   * no image newer than the build start exists afterwards;
+#   * structural verification fails.
 #
 set -euo pipefail
 
@@ -11,120 +23,143 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${1:-}"
 TARGET="${2:-recoveryimage}"
 
-[ -n "$SRC" ] || { echo "usage: $0 /absolute/path/to/fox_12.1 [target]" >&2; exit 1; }
-[ -d "$SRC/build" ] || { echo "ERROR: $SRC does not look like an AOSP tree" >&2; exit 1; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+[ -n "$SRC" ] || die "usage: $0 /absolute/path/to/fox_12.1 [target]"
+[ -d "$SRC/build" ] || die "$SRC does not look like an AOSP tree (no build/)"
+[ -d "$SRC/.repo" ] || echo "WARNING: $SRC has no .repo; continuing with an existing checkout"
 [ -f "$SRC/device/xiaomi/sakura/prebuilt/Image.gz-dtb" ] || {
     echo "ERROR: prebuilt kernel missing. Run ./build/fetch_kernel.sh first." >&2
     echo "       (or rebuild it - device/xiaomi/sakura/prebuilt/README.md)" >&2
     exit 1
 }
 
-cd "$SRC"
-# shellcheck disable=SC1091
-. build/envsetup.sh
+avail_gb=$(df -BG --output=avail "$SRC" | tail -1 | tr -dc '0-9')
+[ "${avail_gb:-0}" -ge 20 ] || die "need >=20 GB free inside $SRC for build output, have ${avail_gb} GB"
 
-# OrangeFox needs this on legacy SoC trees; missing repos exist in the minimal
-# manifest by design.
+# --- JDK 11 -----------------------------------------------------------------
+# Soong 12.1 requires JDK 11. Prefer an existing JAVA_HOME, otherwise obtain the
+# portable Temurin build (no root needed) and make it win in PATH. Exported
+# before envsetup because soong_ui reads ANDROID_JAVA_HOME at configure time.
+if [ -z "${JAVA_HOME:-}" ] || ! "$JAVA_HOME/bin/java" -version 2>&1 | grep -q 'version "11'; then
+    JAVA_HOME="$("$ROOT/build/setup_jdk11.sh")"
+fi
+export JAVA_HOME
+export ANDROID_JAVA_HOME="$JAVA_HOME"
+export PATH="$JAVA_HOME/bin:$PATH"
+echo "==> JDK: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
+
+cd "$SRC"
+
+# --- never let a stale image satisfy the verifier ---------------------------
+OUT="out/target/product/sakura"
+rm -f "$OUT/OrangeFox-unofficial-sakura.img" "$OUT/recovery.img"
+BUILD_START=$(date +%s)
+
+# --- envsetup ---------------------------------------------------------------
+LOG="${ROOT}/reference/build-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "${ROOT}/reference"
+ENVSETUP_LOG="${ROOT}/reference/envsetup-$(date +%Y%m%d-%H%M%S).log"
+echo "==> sourcing build/envsetup.sh (log: $ENVSETUP_LOG)"
+
+# nounset MUST be off while sourcing: envsetup.sh reads unset variables (TOP,
+# ZSH_VERSION, ...) and aborts under `set -u` before lunch() is defined.
+set +u
+. build/envsetup.sh >"$ENVSETUP_LOG" 2>&1
+es=$?
+set -u
+if [ "$es" != 0 ]; then
+    echo "==> envsetup.sh failed with status $es; last 80 lines:" >&2
+    tail -80 "$ENVSETUP_LOG" >&2 || true
+    die "build/envsetup.sh failed; the build cannot select a lunch target"
+fi
+command -v lunch >/dev/null 2>&1 || {
+    tail -80 "$ENVSETUP_LOG" >&2 || true
+    die "build/envsetup.sh did not define lunch()"
+}
+
 export ALLOW_MISSING_DEPENDENCIES=true
 export LC_ALL=C
+export JACK_SERVER_VM_ARGUMENTS="-Dfile.encoding=UTF-8"
 
+# --- lunch ------------------------------------------------------------------
 echo "==> lunch fox_sakura-eng"
-lunch fox_sakura-eng
+set +e
+lunch fox_sakura-eng 2>&1 | tee -a "$LOG"
+lunch_status=${PIPESTATUS[0]}
+set -e
+[ "$lunch_status" = 0 ] || die "lunch fox_sakura-eng failed with status $lunch_status"
+[ "${TARGET_PRODUCT:-}" = "fox_sakura" ] || die "lunch selected TARGET_PRODUCT='${TARGET_PRODUCT:-<unset>}', expected fox_sakura"
+echo "==> TARGET_PRODUCT=$TARGET_PRODUCT TARGET_BUILD_VARIANT=${TARGET_BUILD_VARIANT:-?} TW_THEME=${TW_THEME:-?}"
 
-# --- populate OrangeFox theme resources into recovery/root/twres ------
-# Why this exists: the recovery binary install recipe at 99% runs
-#   sed -i "s/{themeversion}//" .../twres/splash.xml
-#   sed -i "s/{themeversion}//" .../twres/ui.xml
-# so $(TARGET_RECOVERY_ROOT_OUT)/twres MUST contain the selected theme's
-# splash.xml + ui.xml (plus fonts/languages) BEFORE that recipe runs.
-# The OrangeFox recovery module is the canonical place that does this at
-# soong-configure time (bootable/recovery/gui/libguitwrp_defaults.go,
-# reading TW_THEME from the twrpVarsPlugin namespace). In the runs so far
-# that side effect has not happened (twres/ absent after lunch), so add an
-# explicit, deterministic, device-side copy here. It is idempotent, reads the
-# real theme source from the recovery source tree, and fails hard (with the
-# exact source path) if the theme is genuinely missing, rather than producing
-# empty XML files or silently suppressing the sed.
-# Source of truth: gui/theme/$(TW_THEME)/{splash.xml,ui.xml,images,pages,
-#   resources,themes} + gui/theme/common/{fonts,languages}
-# (verified against the pinned recovery source tree, commit 8d2aad19).
+# --- OrangeFox theme resources ---------------------------------------------
+# The recovery install recipe runs `sed -i s/{themeversion}//` on
+# recovery/root/twres/{splash.xml,ui.xml}; those files must exist first.
+# Source of truth: gui/theme/<TW_THEME>/ + gui/theme/common/.
 echo "=== populating OrangeFox theme into recovery/root/twres ==="
 THEME_SRC="bootable/recovery/gui/theme"
-if ! command -v get_build_var >/dev/null 2>&1; then
-  echo "::warning::get_build_var not available; theme copy skipped (will re-run next build if TW_THEME is later known)"
-else
-  TW_THEME_VAL="$(get_build_var TW_THEME 2>/dev/null | tail -1 | tr -d '[:space:]' )"
-  echo "TW_THEME resolved to: ${TW_THEME_VAL:-<empty>}"
-  if [ -n "${TW_THEME_VAL}" ] && [ -d "${THEME_SRC}/${TW_THEME_VAL}" ]; then
-    TW_RES="out/target/product/sakura/recovery/root/twres"
-    mkdir -p "$TW_RES"
+TW_THEME_VAL="$(get_build_var TW_THEME 2>/dev/null | tail -1 | tr -d '[:space:]')"
+echo "TW_THEME resolved to: ${TW_THEME_VAL:-<empty>}"
+[ -n "$TW_THEME_VAL" ] || die "TW_THEME resolved to empty; the theme copy cannot be done (check BoardConfig.mk and vendor/twrp/config/BoardConfigSoong.mk)"
+[ -d "$THEME_SRC/$TW_THEME_VAL" ] || die "theme dir missing: $THEME_SRC/$TW_THEME_VAL"
 
-    # Per-theme files: splash.xml, ui.xml and the theme subdirs.
-    for sub in "$THEME_SRC/$TW_THEME_VAL"/*; do
-      bn="$(basename "$sub")"
-      if [ -f "$sub" ]; then
-        cp -f "$sub" "$TW_RES/$bn"
-      elif [ -d "$sub" ]; then
-        cp -a "$sub" "$TW_RES/$bn"
-      fi
+TW_RES="out/target/product/sakura/recovery/root/twres"
+mkdir -p "$TW_RES"
+for sub in "$THEME_SRC/$TW_THEME_VAL"/*; do
+    bn="$(basename "$sub")"
+    if [ -f "$sub" ]; then cp -f "$sub" "$TW_RES/$bn"
+    elif [ -d "$sub" ]; then cp -a "$sub" "$TW_RES/$bn"; fi
+done
+for sub in "$THEME_SRC/common"/*; do
+    [ -d "$sub" ] && cp -a "$sub" "$TW_RES/$(basename "$sub")"
+done
+if [ "${TW_EXTRA_LANGUAGES:-}" = "true" ]; then
+    for sub in "$THEME_SRC/extra-languages"/*; do
+        [ -d "$sub" ] && cp -a "$sub" "$TW_RES/$(basename "$sub")"
     done
-
-    # Common theme resources (fonts and languages) that every theme uses.
-    for sub in "$THEME_SRC/common"/*; do
-      bn="$(basename "$sub")"
-      if [ -d "$sub" ]; then
-        cp -a "$sub" "$TW_RES/$bn"
-      fi
-    done
-
-    # Optional extra languages, gated on TW_EXTRA_LANGUAGES (matches the
-    # recovery module's own logic).
-    if [ "${TW_EXTRA_LANGUAGES}" = "true" ]; then
-      for sub in "$THEME_SRC/extra-languages"/*; do
-        bn="$(basename "$sub")"
-        if [ -d "$sub" ]; then
-          cp -a "$sub" "$TW_RES/$bn"
-        fi
-      done
-    fi
-
-    # Verify the two files the recovery install recipe actually touches.
-    if [ ! -f "$TW_RES/splash.xml" ] || [ ! -f "$TW_RES/ui.xml" ]; then
-      echo "::error::OrangeFox theme copy did not produce the files the recovery install recipe needs"
-      echo "      twres/ contents: $(ls -1 "$TW_RES" 2>/dev/null | tr '\n' ' ' )"
-      echo "      expected splash.xml + ui.xml under: $TW_RES"
-      echo "      theme source dir: $THEME_SRC/$TW_THEME_VAL"
-      echo "      files present in source:"
-      echo "        $(ls -1 "$THEME_SRC/$TW_THEME_VAL" 2>/dev/null | tr '\n' ' ' )"
-      exit 1
-    fi
-    echo "OrangeFox theme populated into $TW_RES ($(ls -1 "$TW_RES" 2>/dev/null | wc -l) entries)"
-  else
-    echo "::warning::TW_THEME value '${TW_THEME_VAL}' did not resolve to a theme dir at $THEME_SRC/${TW_THEME_VAL}; theme copy skipped"
-    echo "      Tried: $THEME_SRC/${TW_THEME_VAL}"
-    echo "      This will re-run on the next build once TW_THEME is known."
-  fi
 fi
+for f in splash.xml ui.xml; do
+    [ -f "$TW_RES/$f" ] || die "theme copy did not produce $TW_RES/$f (source: $THEME_SRC/$TW_THEME_VAL)"
+done
+echo "==> theme populated into $TW_RES ($(ls -1 "$TW_RES" | wc -l) entries)"
 
-
-echo "==> mka ${TARGET}  (log: ${ROOT}/reference/build-\$(date +%s).log)"
-mkdir -p "${ROOT}/reference"
-LOG="${ROOT}/reference/build-$(date +%Y%m%d-%H%M%S).log"
+# --- build ------------------------------------------------------------------
+mem_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 ))
+J=0
+if [ -n "${PARALLEL_JOBS:-}" ] && [ "$PARALLEL_JOBS" != "0" ]; then
+    J="$PARALLEL_JOBS"
+else
+    J=$(( mem_mb / 1800 )); [ "$J" -lt 1 ] && J=1
+    [ "$J" -gt "$(nproc)" ] && J="$(nproc)"
+    [ "$J" -gt 8 ] && J=8
+fi
+echo "==> mka -j$J $TARGET  (RAM ${mem_mb} MB, $(nproc) cpus, log: $LOG)"
 set +e
-mka "${TARGET}" 2>&1 | tee "${LOG}"
+mka -j"$J" "$TARGET" 2>&1 | tee -a "$LOG"
 status=${PIPESTATUS[0]}
 set -e
 
-echo
-echo "==> build finished with status ${status}; full log: ${LOG}"
 if [ "$status" != 0 ]; then
-    echo "First errors:" >&2
+    echo "==> build failed with status $status; first errors:" >&2
     grep -nE 'error:|Error [0-9]+|FAILED' "$LOG" | head -40 >&2 || true
     exit "$status"
 fi
 
-OUT="out/target/product/sakura"
-ls -l "$OUT"/*.img 2>/dev/null || true
+# --- exactly one image, produced by this run -------------------------------
+IMG=""
+for cand in "$OUT/OrangeFox-unofficial-sakura.img" "$OUT/recovery.img"; do
+    [ -f "$cand" ] && IMG="$cand" && break
+done
+[ -n "$IMG" ] || die "build reported success but no recovery image exists in $OUT"
+mtime=$(stat -c %Y "$IMG")
+[ "$mtime" -ge "$BUILD_START" ] || die "$IMG predates this build (stale output); refusing to verify it"
+echo "==> image: $IMG ($(stat -c %s "$IMG") bytes, sha256 $(sha256sum "$IMG" | cut -d' ' -f1))"
+
+# --- structural verification is part of a successful build -----------------
+"$ROOT/build/verify_image.sh" "$SRC" "$IMG"
 echo
-echo "Expected OrangeFox image: $OUT/OrangeFox-unofficial-sakura.img"
-echo "Now run: ./build/verify_image.sh $SRC"
+echo "==> build + structural verification complete."
+echo "    image : $IMG"
+echo "    sha256: $(sha256sum "$IMG" | cut -d' ' -f1)"
+echo "    log   : $LOG"
+echo "    This is structural evidence only: no boot or decryption test was performed."

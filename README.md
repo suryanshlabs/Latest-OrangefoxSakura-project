@@ -5,10 +5,11 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 **`fox_12.1`** manifest, preserving the behaviour of the last official release
 (**R11.0_5**) while extending it toward modern ROMs.
 
-> **Status: design + source audit complete. NOT built, NOT flashed, NOT tested
-> on hardware.** Nothing here has been validated on a device. Read
-> `documentation/TEST_REPORT.md` before trusting any claim, and do not flash
-> anything without your own rollback plan.
+> **Status: source fixes applied and statically checked. NOT built, NOT
+> flashed, NOT tested on hardware.** The old ServerHive self-hosted runner has
+> expired and is no longer referenced by the workflow. Nothing here has been
+> validated on a device. Read `documentation/TEST_REPORT.md` before trusting
+> any claim, and do not flash anything without your own rollback plan.
 
 ---
 
@@ -23,7 +24,7 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 | Is the DTB sakura's? | Yes — 46 FDTs whose camera/panel nodes are sakura-specific (`sakura_imx486_ofilm`, `ili7807`, `nt36672`) | `REFERENCE_R11_ANALYSIS.md` §5 |
 | Is the community R12 tree usable as-is? | Partly — it is **daisy-derived** (blobs + kernel) and its OrangeFox product makefile was never wired up | `SOURCE_REFERENCES.md` §B1, `DEVICE_COMPATIBILITY.md` §3 |
 | Android 9–17 support? | 9 solid, 10–15 plausible, **16/17 no ROM exists at all** | `ANDROID_COMPATIBILITY.md` |
-| Decryption? | FDE + FBE-without-metadata achievable; **metadata encryption impossible** on this vendor/kernel | `ENCRYPTION.md` §4 |
+| Decryption? | FDE + FBE-without-metadata achievable; **metadata encryption impossible** on this vendor/kernel. Requires QTI blobs that are not committed — see `IMAGE_AUDIT.md` | `ENCRYPTION.md` §4 |
 
 ## Repository layout
 
@@ -48,21 +49,29 @@ testing/android-9..17/    per-ROM-generation test records (empty = untested)
 
 ## Quick start
 
+On a compatible Linux x86_64 host (see `documentation/BUILD_INSTRUCTIONS.md`
+§1: >=45 GB free, >=8 GB RAM, not root), one command does everything:
+
 ```bash
-# 1. Reproduce the reference analysis (no root, no extra packages, ~46 MB)
+./build/run-all.sh "$HOME/orangefox/fox_12.1"
+```
+
+It runs static checks, the pinned sync, the kernel fetch + DTB verification,
+the single `recoveryimage` build and the hard structural verification, then
+prints the image path and SHA-256.
+
+Structural checks alone, no source needed:
+
+```bash
+python3 tools/static_checks.py
+```
+
+Reference analysis (no root, no extra packages, ~46 MB):
+
+```bash
 ./build/fetch_reference.sh
 python3 tools/bootimg.py info reference/recovery.img
 python3 tools/verify_dtb.py reference/unpacked/kernel   # FAILs: stock kernel has no fscrypt
-
-# 2. Supply a 4.9 sakura kernel (verified, sha256-pinned)
-./build/fetch_kernel.sh
-
-# 3. Sync OrangeFox R12.0 (needs >=45 GB free; hours)
-./build/sync.sh "$HOME/fox_12.1"
-
-# 4. Build and structurally verify
-./build/build.sh "$HOME/fox_12.1"
-./build/verify_image.sh "$HOME/fox_12.1"
 ```
 
 Then run the device tests in `testing/android-N/` and fill in real results.

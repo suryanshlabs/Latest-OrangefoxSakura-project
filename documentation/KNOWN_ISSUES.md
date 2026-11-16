@@ -54,6 +54,34 @@ ls -l /dev/block/bootdevice/by-name/recovery
 If the OrangeFox installer turns out to reject a by-name path (untested), fall
 back to the raw number **after** reading it from that symlink — never assume.
 
+## KI-11 — QTI crypto chain is absent from the tree (blocker for decryption)
+
+`device/xiaomi/sakura/proprietary-files.txt` lists the `qseecomd`,
+Keymaster 3.0 and Gatekeeper 1.0 QTI services plus their library set, but the
+binaries are proprietary and are **not** in this repository. The audited
+handoff image (`documentation/IMAGE_AUDIT.md`) shipped `keystore2` and none of
+the three services, with no active `fileencryption=ice`.
+
+*Impact:* any image built without those blobs cannot decrypt FDE or FBE, and
+because the fstab now declares `fileencryption=ice`, an FBE-encrypted `/data`
+may hang at the splash rather than report an error.
+*Mitigation:* `build/check_crypto_blobs.sh` lists exactly what is missing and
+`build/verify_image.sh` prints `DECRYPTION: UNVERIFIED`; no decryption claim is
+made anywhere.
+*Fix path:* extract the blobs from your own sakura Android 9 stock vendor image
+(`DEPENDENCIES.md` §4) and record their SHA-1s.
+
+## KI-12 — sbin vs system/bin destination for the QTI services (medium)
+
+The inherited list maps the three service binaries to `recovery/root/sbin`,
+while the Android 12+ recovery layout used by `fox_12.1` expects services under
+`/system/bin`. The correct path is whatever the synced
+`vendor/recovery`/`init.recovery.qcom_decrypt.rc` actually executes;
+`build/check_crypto_blobs.sh` greps that tree and prints the referenced paths
+so the mismatch is visible instead of assumed. Do not "fix" this by copying a
+binary into both paths without checking its `DT_NEEDED` libraries resolve — a
+decrypt service that cannot link is worse than an absent one.
+
 ## KI-5 — No build has been performed (blocker for any release claim)
 
 See `TEST_REPORT.md` §2. Everything in `device/` is reviewed-but-unbuilt.

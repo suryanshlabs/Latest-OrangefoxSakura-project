@@ -21,16 +21,24 @@ sudo apt install -y git curl python3 repo zip unzip \
   squashfs-tools xsltproc zlib1g-dev
 ```
 
-### ServerHive self-hosted runner (measured 2026-11-15)
+### Self-hosted runner notes (ServerHive is retired)
 
-The runner account (`santhronyt`) has **no passwordless sudo**, so the apt line
-above cannot be run from CI there. Measured at the same time: `java` is
-**OpenJDK 21**, while the Android 12.1 Soong bootstrap requires **11**.
+The ServerHive runner used for earlier runs has **expired** and the workflow no
+longer references it. Any replacement Linux x86_64 host works as a self-hosted
+runner; the workflow takes its label from the `runner_label` dispatch input.
+
+On such a host, if the account has **no passwordless sudo**, the apt line above
+cannot be run from CI. Note also that distro images may ship **OpenJDK 21**
+while the Android 12.1 Soong bootstrap requires **11**.
 
 `build/setup_jdk11.sh` solves the JDK without root - it reuses a system JDK 11
 when one exists, otherwise it unpacks the current Temurin 11 GA tarball into
-`$HOME/.jdk11` and prints the `JAVA_HOME` to use. Both the preflight and the
-build jobs call it, so no apt step is required for the JDK.
+`$HOME/.jdk11` and prints the `JAVA_HOME` to use. The workflow's preflight, the
+build job and `build/build.sh` all use it (and prepend `$JAVA_HOME/bin` to
+`PATH`), so no apt step is required for the JDK.
+
+Termux / Android-device hosts (for example a Poco F1 running Termux) are not a
+supported build environment for this tree and are not claimed to be one.
 
 System packages are different: if the preflight reports missing tools, they must
 be installed once by whoever holds root on the host:
@@ -46,10 +54,10 @@ sudo apt install -y bc bison build-essential ccache flex g++-multilib \
 
 ### This analysis environment (for reproducibility of the report)
 
-The Cloud workspace used to produce this documentation has **9.5 GB free,
-3.8 GB RAM, 2 vCPU, no root** and no `cpio`/`lz4`/`java` binaries. That is
-**sufficient** for reference analysis (which is dependency-free Python) and
-**not sufficient** to sync or build OrangeFox. See `BUILD_INSTRUCTIONS.md` §6.
+A Cloud analysis workspace is **sufficient** for the dependency-free tooling
+here (`tools/bootimg.py`, `tools/verify_dtb.py`, `tools/static_checks.py`,
+`build/check_crypto_blobs.sh`) and **not sufficient** to sync or build
+OrangeFox. See `BUILD_INSTRUCTIONS.md` §7.
 
 ## 2. Source dependencies (pinned in `manifest/`)
 
