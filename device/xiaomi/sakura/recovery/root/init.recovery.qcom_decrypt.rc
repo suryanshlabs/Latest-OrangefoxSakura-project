@@ -1,0 +1,88 @@
+#
+# init.recovery.qcom_decrypt.rc — TEE / decryption services for sakura
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The pinned upstream trees contain NO service definition for the QTI TEE
+# chain. Checked at the revisions this repository builds against
+# (build/sync.sh: bootable/recovery 8d2aad19, vendor/recovery 1998cfc):
+#
+#   git -C bootable/recovery grep -n qseecomd            -> no service, no rc
+#   git -C vendor/recovery   grep -n qcom_decrypt        -> no such module
+#   bootable/recovery/etc/init/*.rc                      -> boot, health, keystore2,
+#                                                           lpdumpd, nano,
+#                                                           servicemanager ...
+#
+# Earlier revisions of this device tree imported /init.recovery.qcom_decrypt.rc
+# and added the PRODUCT_PACKAGES "qcom_decrypt" / "qcom_decrypt_fbe" while
+# claiming both were "provided by the vendor/recovery tree". Neither exists,
+# so init logged a failed import, no TEE service ever started, and the previous
+# handoff image shipped keystore2 with no qseecomd / Keymaster 3.0 / Gatekeeper
+# 1.0 at all. That is why decryption could not work.
+#
+# PATH CHOICE — MEASURED, NOT ASSUMED
+# -----------------------------------
+# In the pinned bootable/recovery the recovery ramdisk is built as:
+#   binaries      -> $(TARGET_RECOVERY_ROOT_OUT)/system/bin
+#   libraries     -> $(TARGET_RECOVERY_ROOT_OUT)/system/lib64
+#   /sbin         -> ONLY the symlinks sh and bash (prebuilt/Android.mk)
+#   init env      -> PATH=/sbin:/system/bin
+#                    LD_LIBRARY_PATH=/system/lib64:/vendor/lib64/hw  (etc/init.rc)
+#   relink        -> prebuilt/relink.sh only COPIES; it no longer rewrites a
+#                    linker path, and the interpreter is /system/bin/linker64.
+#
+# Therefore the services are installed in /system/bin and their QTI libraries
+# in /system/lib64: both are on init's search paths, and the interpreter path
+# is valid without /system being mounted. Destination paths in
+# device/xiaomi/sakura/proprietary-files.txt match this file exactly, and
+# tools/check_init_services.py fails the build if any of them disagrees.
+#
+# The chain is started in dependency order: qseecomd opens /dev/qseecom, the
+# HALs are started only once init reports qseecomd running. Starting the HALs
+# at boot time would race the TEE daemon on a cold recovery boot.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# /dev/qseecom permissions are set in on fs in init.recovery.qcom.rc; this
+# fragment only declares and starts services so there is one source of truth
+# for device permissions.
+
+on boot
+    start qseecomd
+
+# hwservicemanager is started by the pinned etc/init/hwservicemanager.rc on
+# init and announces itself with hwservicemanager.ready. Starting the HALs a
+# second time from that trigger removes the registration race on a cold boot;
+# `start` on an already-running service is a no-op.
+on property:hwservicemanager.ready=true
+    start vendor.keymaster-3-0
+    start vendor.gatekeeper-1-0
+
+on property:init.svc.qseecomd=running
+    start vendor.keymaster-3-0
+    start vendor.gatekeeper-1-0
+
+# QSEECom daemon: userspace side of the Qualcomm TEE channel.
+service qseecomd /system/bin/qseecomd
+    class core
+    user root
+    group root system drmrpc
+    seclabel u:r:recovery:s0
+
+# Keymaster 3.0 HAL — the TEE-backed keymaster the sakura Android 9 vendor
+# provides (ro.hardware.keystore=msm8953). OF_DEFAULT_KEYMASTER_VERSION=3.0 in
+# vendorsetup.sh makes the recovery client ask for exactly this version.
+service vendor.keymaster-3-0 /system/bin/android.hardware.keymaster@3.0-service-qti
+    class hal
+    user system
+    group system
+    seclabel u:r:recovery:s0
+
+# Gatekeeper 1.0 HAL — verifies the user credential (FDE) / synthetic password
+# (FBE) against the TEE.
+service vendor.gatekeeper-1-0 /system/bin/android.hardware.gatekeeper@1.0-service-qti
+    class hal
+    user system
+    group system
+    seclabel u:r:recovery:s0

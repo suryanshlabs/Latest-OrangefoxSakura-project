@@ -55,7 +55,12 @@ flashed and no device was booted.
   `device/xiaomi/sakura/proprietary-files.txt` and `DEPENDENCIES.md` §4 for the
   licence-safe extraction procedure.
 * `build/check_crypto_blobs.sh` reports exactly which listed blobs are missing
-  for the current tree.
+  for the current tree, and with `--require` refuses to let a build proceed
+  (used by `build.sh`, `run-all.sh` and the workflow).
+* `build/extract_blobs.sh` + `build/install_blobs.sh` make the chain
+  reproducible from the user's own firmware, and `tools/check_init_services.py`
+  verifies every service path, interpreter and library dependency in the built
+  ramdisk.
 * `build/verify_image.sh` prints `DECRYPTION: UNVERIFIED` whenever the chain is
   absent from the built ramdisk, instead of implying that FBE works because a
   flag exists.

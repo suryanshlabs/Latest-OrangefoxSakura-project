@@ -46,6 +46,11 @@ on:
         type: boolean
         default: true
         required: false
+      allow_missing_crypto:
+        description: 'Build WITHOUT the vendor TEE chain (image cannot decrypt /data; for non-crypto work only)'
+        type: boolean
+        default: false
+        required: false
 
 concurrency:
   group: orangefox-sakura-build
@@ -151,6 +156,10 @@ jobs:
           fi
           echo "core toolchain OK"
 
+      - name: Host dependency preflight (build/check_deps.sh)
+        shell: bash
+        run: ./build/check_deps.sh --quick --dest '${{ inputs.source_dir }}'
+
   build:
     name: Sync, build and verify OrangeFox sakura
     needs: preflight
@@ -227,7 +236,44 @@ jobs:
             ./build/fetch_kernel.sh
           fi
           python3 tools/verify_dtb.py "$K"
-          ./build/check_crypto_blobs.sh "$SRC" || true
+
+      # The blobs are proprietary and are not in this repository. This step
+      # installs them when the runner already has an extracted vendor_blobs/
+      # set (build/extract_blobs.sh) and otherwise stops with instructions,
+      # unless allow_missing_crypto was explicitly set for a no-decryption
+      # build.
+      - name: TEE blobs + decryption gate
+        if: ${{ ! inputs.allow_missing_crypto }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f vendor_blobs/MANIFEST.sha256 ]; then
+            ./build/install_blobs.sh
+            # The device tree in $SRC was copied before the blobs existed, so
+            # re-sync it now that recovery/root/system/{bin,lib64} and the
+            # generated blob_install.mk are in place.
+            rsync -a --exclude 'prebuilt/Image.gz-dtb' \
+                  "$GITHUB_WORKSPACE/device/xiaomi/sakura/" \
+                  "$SRC/device/xiaomi/sakura/"
+          else
+            echo "::error::No vendor_blobs/ on this runner: the QTI TEE chain was never extracted."
+            echo "::error::These binaries are proprietary, so this repository cannot ship or download them."
+            echo "::error::On a machine holding your sakura Android 9 stock fastboot ROM, run:"
+            echo "::error::  ./build/extract_blobs.sh --firmware <fastboot ROM>.tgz"
+            echo "::error::then make vendor_blobs/ available to this runner (or extract it there)."
+            echo "::error::Or dispatch with allow_missing_crypto=true to build an explicitly no-decryption image."
+            ./build/check_crypto_blobs.sh || true
+            exit 1
+          fi
+          ./build/check_crypto_blobs.sh --require "$SRC"
+
+      - name: Decryption gate (explicitly skipped)
+        if: ${{ inputs.allow_missing_crypto }}
+        shell: bash
+        run: |
+          echo "::warning::allow_missing_crypto=true - building an image that CANNOT decrypt /data."
+          echo "::warning::Do not report FDE/FBE as working for this artefact."
+          ./build/check_crypto_blobs.sh || true
 
       - name: Build recoveryimage (single production build)
         shell: bash
@@ -236,6 +282,9 @@ jobs:
           OUT="$SRC/out/target/product/sakura"
           # A stale image must never be able to satisfy the verifier.
           rm -f "$OUT/OrangeFox-unofficial-sakura.img" "$OUT/recovery.img"
+          if [ '${{ inputs.allow_missing_crypto }}' = 'true' ]; then
+            export SAKURA_ALLOW_MISSING_CRYPTO=1
+          fi
           PARALLEL_JOBS='${{ inputs.parallel_jobs }}' \
             ./build/build.sh "$SRC" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           exit "${PIPESTATUS[0]}"
@@ -244,7 +293,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ./build/verify_image.sh "$SRC" 2>&1 | tee "$GITHUB_WORKSPACE/verify.log"
+          if [ '${{ inputs.allow_missing_crypto }}' = 'true' ]; then
+            ./build/verify_image.sh "$SRC" 2>&1 | tee "$GITHUB_WORKSPACE/verify.log"
+          else
+            ./build/verify_image.sh "$SRC" --require-crypto 2>&1 | tee "$GITHUB_WORKSPACE/verify.log"
+          fi
           exit "${PIPESTATUS[0]}"
 
       - name: Collect image, checksums, metadata and logs
@@ -269,6 +322,7 @@ jobs:
             echo "fox release:    $(grep -m1 FOX_BASE_VERSION "$(dirname "$SRC")/sync/orangefox_sync.sh" 2>/dev/null || echo 'unknown')"
             echo "device:         $DEVICE"
             echo "jobs:           ${{ inputs.parallel_jobs }} (0=auto)"
+            echo "decryption:     $([ '${{ inputs.allow_missing_crypto }}' = 'true' ] && echo 'BUILT WITHOUT TEE CHAIN - cannot decrypt /data' || echo 'TEE chain required and gated') "
             echo "disk at start:  ${{ needs.preflight.outputs.disk_gb }} GB"
             echo "memory:         ${{ needs.preflight.outputs.mem_mb }} MB"
             echo

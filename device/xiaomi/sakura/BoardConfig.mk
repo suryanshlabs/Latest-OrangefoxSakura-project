@@ -80,9 +80,20 @@ TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 # ---------------------------------------------------------------------------
 # Crypto
 #
-# qcom_decrypt      -> FDE (crypto footer), Android 9-era ROMs
-# qcom_decrypt_fbe  -> FBE (fileencryption=ice), Android 10+ ROMs
+# FDE (crypto footer, Android 9 ROMs) and FBE (fileencryption=ice, Android
+# 10+ ROMs) are handled by bootable/recovery's own crypto code:
+#   TW_INCLUDE_CRYPTO     -> -DTW_INCLUDE_CRYPTO -DUSE_FSCRYPT, libcryptfsfde,
+#                            libf2fs_sparseblock, libgpt_twrp, Keymaster/Gatekeeper
+#                            client libraries (Android.mk at the pinned SHA)
+#   TW_INCLUDE_CRYPTO_FBE -> FBE path (-DTW_INCLUDE_FBE), keystore2/gatekeeper
+#                            support libraries and servicemanager.rc
 # Keymaster 3.0 is what the sakura Android 9 vendor actually provides.
+#
+# Two variables that used to sit here were dead and are removed:
+#   BOARD_USES_QCOM_FBE_DECRYPTION  - not referenced by any file in the pinned
+#                                     bootable/recovery or vendor/recovery trees;
+#                                     it looked like configuration and did nothing.
+#   TW_INCLUDE_FBE                  - same: the build reads TW_INCLUDE_CRYPTO_FBE.
 #
 # Metadata encryption (dm-default-key + KM4/KeyMint) is NOT available on this
 # device; see documentation/ENCRYPTION.md §4. Do not enable the metadata
@@ -90,8 +101,7 @@ TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 # it claims to decrypt.
 # ---------------------------------------------------------------------------
 TW_INCLUDE_CRYPTO := true
-BOARD_USES_QCOM_FBE_DECRYPTION := true
-TW_INCLUDE_FBE := true
+TW_INCLUDE_CRYPTO_FBE := true
 BOARD_USES_METADATA_PARTITION := false
 
 # ---------------------------------------------------------------------------

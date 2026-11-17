@@ -44,11 +44,35 @@ bash -n build/*.sh
 | `fox_sakura.mk` inherits `vendor/twrp/config/common.mk`; `fox_sakura-eng` is a lunch target | PASS |
 | `vendorsetup.sh`: sakura device guard, FBE not skipped, keymaster 3.0 pinned | PASS |
 | workflow: manual only, runner selectable (no ServerHive self-hosted label), verification is a hard gate, artifacts uploaded on failure, stale image removed, static checks wired in | PASS |
-| all `build/*.sh` pass `bash -n` | PASS |
-| QTI crypto blob availability | **16 of 16 listed blobs absent** — decryption reported as UNVERIFIED (see `IMAGE_AUDIT.md`) |
+| all `build/*.sh` pass `bash -n` and are executable; all `tools/*.py` compile | PASS |
+| `device.mk` installs every `recovery/root` file via `PRODUCT_COPY_FILES` | PASS (previously only the fstab was installed, so the init fragments and `twrp.flags` never reached the ramdisk) |
+| `BoardConfig.mk` uses the variables the pinned tree reads (`TW_INCLUDE_CRYPTO`, `TW_INCLUDE_CRYPTO_FBE`) and no dead ones | PASS (removed `BOARD_USES_QCOM_FBE_DECRYPTION`, `TW_INCLUDE_FBE`) |
+| `device.mk` no longer requests the nonexistent `qcom_decrypt`/`qcom_decrypt_fbe` modules | PASS |
+| init: every import target exists, every service executable path is absolute, matches the manifest destination and (once installed) resolves its libraries | PASS via `tools/check_init_services.py` |
+| QTI crypto blob availability | **all required blobs absent** (no firmware supplied) — `DECRYPTION: UNVERIFIED`, and `build.sh` refuses to build unless `SAKURA_ALLOW_MISSING_CRYPTO=1` |
+| workflow: decryption gate + explicit `allow_missing_crypto` opt-out | PASS |
 
 What this does **not** prove: that the source syncs, that Soong builds, that the
 image boots, or that any decryption works.
+
+## 1c. Toolchain tests executed (new extraction workflow)
+
+```bash
+python3 -m unittest discover -s tests -v      # 18 tests
+```
+
+| Area | What is exercised | Result |
+|---|---|---|
+| `tools/elf.py` | AArch64 header, `PT_INTERP`, `DT_NEEDED`, `DT_SONAME`; 32-bit and non-ELF rejection | PASS |
+| `tools/simg2img.py` | Android sparse → raw roundtrip, raw passthrough, `--info` | PASS |
+| `tools/check_init_services.py` | resolvable ramdisk; missing library; dangling import; missing interpreter; crypto requirement | PASS |
+| `build/extract_blobs.sh` | end-to-end against a real ext4 `vendor.img` read via `debugfs`: extraction of required + optional files, checksum manifest (`sha256sum -c`), report contents, `--dry-run`, wrong-device refusal (daisy), missing required file, wrong architecture | PASS |
+| `build/install_blobs.sh` | install modes (0755/0644), generated `PRODUCT_COPY_FILES`, `--clean`, refusal without blobs | PASS |
+| committed device tree | init scan clean; manifest destinations equal the exec'd service paths | PASS |
+
+The firmware used for the end-to-end tests is **synthetic** (ELF/`build.prop`
+fixtures built by `tests/support.py`), because no genuine sakura ROM is
+available here. That proves the workflow's logic, not sakura's actual blobs.
 
 ## 2. What was NOT executed
 

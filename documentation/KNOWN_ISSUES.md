@@ -26,13 +26,24 @@ sakura-correct (verified), but for a release the kernel should be rebuilt from
 `msm8953E/kernel_xiaomi_msm8953@lineage-21` (`52b67cb3…`) so the binary has
 attributable source. GPL compliance requires offering the corresponding source.
 
-## KI-3 — Proprietary blobs are daisy-derived (high, release blocker)
+## KI-3 — Proprietary blobs are not shipped, and the inherited set was daisy-derived (high, open until you extract your own)
 
-`device/xiaomi/sakura/proprietary-files.txt` inherits its list from the
-community tree, whose header says the blobs come from
-`daisy-user 10 QKQ1.191002.002 V11.0.21.0.QDLMIXM`. They are very likely
-ABI-compatible but **unproven**. Extract sakura Android 9 blobs
-(`V12.0.x.x.PDI*`) and compare SHA-1 (`DEPENDENCIES.md` §4).
+`device/xiaomi/sakura/proprietary-files.txt` inherits its *list* from the
+community tree, whose header says the blobs came from
+`daisy-user 10 QKQ1.191002.002 V11.0.21.0.QDLMIXM`. Mi A2 Lite binaries are not
+sakura binaries; they are likely ABI-compatible but **unproven**.
+
+This is now enforced rather than documented: `build/extract_blobs.sh` reads the
+supplied image's `ro.product.device` / `ro.build.version.release` and refuses
+anything that is not `sakura` on Android 9, and it records the firmware name,
+firmware SHA-256, `vendor.img` SHA-256, vendor fingerprint and per-file SHA-256
+in `vendor_blobs/EXTRACTION_REPORT.md` (`DEPENDENCIES.md` §4).
+
+Still open because no genuine sakura firmware was available in this
+development environment: the extraction has only been exercised against
+synthetic images (see `TEST_REPORT.md` §1c). Run it once against your own
+`V12.0.4.0.PDMMIXM` (Global/India) or `V12.0.1.0.PDICNXM` (China) fastboot ROM
+before treating the chain as sakura-correct.
 
 ## KI-4 — Recovery install partition: hardened, still confirm once (low)
 
@@ -54,33 +65,47 @@ ls -l /dev/block/bootdevice/by-name/recovery
 If the OrangeFox installer turns out to reject a by-name path (untested), fall
 back to the raw number **after** reading it from that symlink — never assume.
 
-## KI-11 — QTI crypto chain is absent from the tree (blocker for decryption)
+## KI-11 — QTI crypto chain: tooling complete, firmware input still required (blocker for decryption)
 
-`device/xiaomi/sakura/proprietary-files.txt` lists the `qseecomd`,
-Keymaster 3.0 and Gatekeeper 1.0 QTI services plus their library set, but the
-binaries are proprietary and are **not** in this repository. The audited
+The `qseecomd`, QTI Keymaster 3.0 and QTI Gatekeeper 1.0 services plus their
+library set are proprietary and are **not** in this repository. The audited
 handoff image (`documentation/IMAGE_AUDIT.md`) shipped `keystore2` and none of
 the three services, with no active `fileencryption=ice`.
 
-*Impact:* any image built without those blobs cannot decrypt FDE or FBE, and
-because the fstab now declares `fileencryption=ice`, an FBE-encrypted `/data`
-may hang at the splash rather than report an error.
-*Mitigation:* `build/check_crypto_blobs.sh` lists exactly what is missing and
-`build/verify_image.sh` prints `DECRYPTION: UNVERIFIED`; no decryption claim is
-made anywhere.
-*Fix path:* extract the blobs from your own sakura Android 9 stock vendor image
-(`DEPENDENCIES.md` §4) and record their SHA-1s.
+What is complete now:
 
-## KI-12 — sbin vs system/bin destination for the QTI services (medium)
+* `build/extract_blobs.sh` — read-only extraction from a stock fastboot ROM,
+  identity + architecture gates, local checksum/provenance report;
+* `build/install_blobs.sh` — installs to the exact ramdisk paths init execs and
+  generates `blob_install.mk` (`PRODUCT_COPY_FILES`);
+* `build/check_crypto_blobs.sh --require` — fatal gate used by `build.sh`,
+  `run-all.sh` and CI (explicit opt-out: `SAKURA_ALLOW_MISSING_CRYPTO=1`);
+* `tools/check_init_services.py` — proves executable path, ELF machine,
+  interpreter and transitive `DT_NEEDED` resolution for every init service.
 
-The inherited list maps the three service binaries to `recovery/root/sbin`,
-while the Android 12+ recovery layout used by `fox_12.1` expects services under
-`/system/bin`. The correct path is whatever the synced
-`vendor/recovery`/`init.recovery.qcom_decrypt.rc` actually executes;
-`build/check_crypto_blobs.sh` greps that tree and prints the referenced paths
-so the mismatch is visible instead of assumed. Do not "fix" this by copying a
-binary into both paths without checking its `DT_NEEDED` libraries resolve — a
-decrypt service that cannot link is worse than an absent one.
+*Still open:* no genuine sakura firmware was supplied, so no real blob has been
+extracted, hashed or link-checked here, and decryption remains **UNTESTED** on
+hardware. Extract from your own firmware (`DEPENDENCIES.md` §4) and boot the
+result on an encrypted `/data` before claiming FDE/FBE works.
+
+## KI-12 — sbin vs system/bin destination for the QTI services (resolved by measurement)
+
+This was previously an unresolved "which path is right?" question. It is now
+measured against the pinned sources (`bootable/recovery` @ `8d2aad19`,
+`vendor/recovery` @ `1998cfca`):
+
+* `Android.mk:197` installs the recovery binaries to
+  `$(TARGET_RECOVERY_ROOT_OUT)/system/bin`;
+* `etc/init.rc` sets `PATH=/sbin:/system/bin` and
+  `LD_LIBRARY_PATH=/system/lib64:/vendor/lib64/hw`;
+* `/sbin` holds only the `sh`/`bash` symlinks, and `prebuilt/relink.sh` in that
+tree only copies files (it does not patch a linker path), so the interpreter
+  `/system/bin/linker64` is the one that must exist.
+
+Therefore services go to `recovery/root/system/bin/…` and their libraries to
+`recovery/root/system/lib64/…`. The manifest and
+`init.recovery.qcom_decrypt.rc` use exactly those strings, and
+`tools/check_init_services.py` fails the build if they ever diverge.
 
 ## KI-5 — No build has been performed (blocker for any release claim)
 

@@ -96,43 +96,70 @@ The prebuilts in the community tree are **daisy-derived** (see
 ## 4. Regenerating the proprietary set from your own sakura (licence-safe)
 
 The blobs are Xiaomi/Qualcomm proprietary and are **not** republished in this
-repository. To obtain sakura-correct copies:
+repository. The extraction is scripted, not manual:
 
 ```bash
-# 1. Fetch a sakura stock image for the exact vendor you target (Android 9):
-#    V12.0.1.0.PDICNXM (China) or V12.0.4.0.PDMMIXM (Global, sakura_india)
-#    from the official MIUI fastboot package (tgz) — unpack:
-tar -xzf sakura_*_images_*.tgz
-# 2. Extract the vendor image (sparse -> raw)
-simg2img vendor.img vendor.raw      # from android-sdk-libsparse-utils
-mkdir -p vendor_tree && sudo mount -o loop,ro vendor.raw vendor_tree
-# 3. Pull the files listed in device/proprietary-files.txt
-while IFS=':' read -r src dst _rest; do
-  case "$src" in \#*|"") continue;; esac
-  install -D "$vendor_tree/$src" "device/xiaomi/sakura/${dst:-recovery/root/$src}"
-done < device/proprietary-files.txt
-# 4. Record hashes for the audit
-sha1sum device/xiaomi/sakura/recovery/root/vendor/lib64/hw/keystore.msm8953.so
+# Required input (the one thing this repository cannot supply):
+#   a sakura Android 9 stock FASTBOOT ROM (.tgz)
+#     Global / sakura_india : V12.0.4.0.PDMMIXM
+#       sakura_india_global_images_V12.0.4.0.PDMMIXM_20201104.0000.00_9.0_global_396957553f.tgz
+#     China                 : V12.0.1.0.PDICNXM
+#   (the fastboot ROM's images/vendor.img is what gets read; a recovery ROM zip
+#    will NOT work - it has no vendor.img)
+
+# 1. Extract + validate (read-only, no root, no Android SDK)
+./build/extract_blobs.sh --firmware sakura_india_global_images_V12.0.4.0.PDMMIXM_*.tgz
+
+# 2. Install into the device tree + generate the make fragment
+./build/install_blobs.sh
+
+# 3. Confirm the chain is complete and init-resolvable
+./build/check_crypto_blobs.sh --require
 ```
 
-Then replace the "unverified (daisy-derived)" note in
-`device/proprietary-files.txt` with the actual sakura source + SHA-1, and update
-`documentation/SOURCE_REFERENCES.md` §D.
+What step 1 does, and why each part exists:
+
+| Step | Detail |
+| --- | --- |
+| unpack | `.tgz` / `.tar.gz` / `.tar.xz` / `.zip`, a directory, or a bare `vendor.img` |
+| sparse -> raw | `tools/simg2img.py` (no `android-sdk-libsparse-utils` needed) |
+| read the filesystem | `debugfs` (e2fsprogs), read-only; `mount -o loop,ro` only if root and debugfs is absent |
+| identity gate | reads `ro.product.device` / `ro.build.version.release` / fingerprint; **refuses any image that is not `sakura` Android 9** |
+| ELF gate | every blob must be ELFCLASS64/AArch64 (`tools/elf.py`) |
+| manifest | `vendor_blobs/MANIFEST.sha256` + `vendor_blobs/EXTRACTION_REPORT.md` record firmware name, firmware SHA-256, `vendor.img` SHA-256, vendor fingerprint, security patch and each file's SHA-256 |
+
+The daisy (Mi A2 Lite) list this tree inherited is exactly the mistake the
+identity gate exists to stop: those binaries are not sakura's.
+
+`vendor_blobs/`, `device/xiaomi/sakura/blob_install.mk` and the installed
+`recovery/root/system/{bin,lib64}` contents are gitignored. Nothing proprietary
+can be committed by accident, and `build/check_crypto_blobs.sh --require` makes
+an image without them impossible to produce silently.
 
 ### Cross-check list (sakura vs the daisy-derived set)
 
-Compare SHA-1 of these before trusting the inherited blobs — if they differ,
-the sakura copies must be used:
+`vendor_blobs/EXTRACTION_REPORT.md` lists the SHA-256 of every extracted file
+together with the firmware it came from. If you also hold a Daisy-based set,
+these seven are the ones to compare before trusting anything:
 
 ```
-vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti
-vendor/bin/hw/android.hardware.keymaster@3.0-service-qti
-vendor/bin/qseecomd
-vendor/lib64/libQSEEComAPI.so
-vendor/lib64/hw/keystore.msm8953.so
-vendor/lib64/hw/gatekeeper.msm8953.so
-vendor/lib64/libkeymasterdeviceutils.so
+bin/hw/android.hardware.gatekeeper@1.0-service-qti
+bin/hw/android.hardware.keymaster@3.0-service-qti
+bin/qseecomd
+lib64/libQSEEComAPI.so
+lib64/hw/keystore.msm8953.so
+lib64/hw/gatekeeper.msm8953.so
+lib64/libkeymasterdeviceutils.so
 ```
+
+### Where the files land, and why
+
+`fox_12.1` builds the recovery ramdisk with binaries in `/system/bin`,
+libraries in `/system/lib64`, `/sbin` holding only the `sh`/`bash` symlinks,
+`PATH=/sbin:/system/bin` and `LD_LIBRARY_PATH=/system/lib64:/vendor/lib64/hw`.
+The manifest therefore installs to `system/bin/...` and `system/lib64/...`, and
+`recovery/root/init.recovery.qcom_decrypt.rc` execs those exact paths.
+`tools/check_init_services.py` fails the build if the two ever disagree.
 
 ## 5. Not required (deliberately excluded)
 

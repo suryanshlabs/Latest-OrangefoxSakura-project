@@ -15,12 +15,43 @@ PRODUCT_PROPERTY_OVERRIDES += \
 # not referenced anywhere in this tree.
 
 # ---------------------------------------------------------------------------
-# Decryption: OrangeFox qcom_decrypt (FDE) + qcom_decrypt_fbe (FBE)
-# Provided by the vendor/recovery tree.
+# Recovery ramdisk files: init fragments and twrp.flags
+#
+# NOT automatic. The Android build only copies a device tree's recovery/root
+# into the ramdisk when the product lists those files explicitly (the standard
+# TWRP form is
+#   PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,.../recovery/root,recovery/root)
+# and the pinned OrangeFox trees do not add a rule of their own). Before this
+# was added, only TARGET_RECOVERY_FSTAB was installed, so init.recovery.qcom.rc,
+# init.recovery.qcom_decrypt.rc and twrp.flags never reached the ramdisk: no
+# bootdevice symlink, no TEE services, no TWRP flag overrides.
+#
+# recovery.fstab is installed by TARGET_RECOVERY_FSTAB (BoardConfig.mk) and is
+# deliberately not listed here, so two rules never write the same path.
 # ---------------------------------------------------------------------------
-PRODUCT_PACKAGES += \
-    qcom_decrypt \
-    qcom_decrypt_fbe
+PRODUCT_COPY_FILES += \
+    $(DEVICE_PATH)/recovery/root/init.recovery.qcom.rc:recovery/root/init.recovery.qcom.rc \
+    $(DEVICE_PATH)/recovery/root/init.recovery.qcom_decrypt.rc:recovery/root/init.recovery.qcom_decrypt.rc \
+    $(DEVICE_PATH)/recovery/root/system/etc/twrp.flags:recovery/root/system/etc/twrp.flags
+
+# ---------------------------------------------------------------------------
+# Decryption: TEE-backed FDE + FBE, implemented by bootable/recovery itself
+#
+# The earlier tree added `PRODUCT_PACKAGES += qcom_decrypt qcom_decrypt_fbe`
+# "provided by the vendor/recovery tree". Verified at the pinned revisions
+# (vendor/recovery 1998cfc, bootable/recovery 8d2aad19): those modules do not
+# exist anywhere upstream - `git grep qcom_decrypt` returns nothing - so the
+# argument was false. Decryption support comes from TW_INCLUDE_CRYPTO (which
+# sets TW_INCLUDE_CRYPTO_FBE and builds libcryptfsfde/libtwrpfscrypt) plus the
+# vendor TEE services that init.recovery.qcom_decrypt.rc starts.
+#
+# The proprietary TEE files themselves are installed by the generated
+# blob_install.mk, written by build/install_blobs.sh from a user-supplied stock
+# firmware. -include (not include) keeps a clean clone parseable; the build is
+# then refused by build/check_crypto_blobs.sh --require instead of silently
+# producing a recovery that cannot decrypt.
+# ---------------------------------------------------------------------------
+-include $(DEVICE_PATH)/blob_install.mk
 
 # ---------------------------------------------------------------------------
 # Recovery modules required by the prebuilt QTI crypto HAL chain and vintf

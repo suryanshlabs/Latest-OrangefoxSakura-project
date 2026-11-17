@@ -18,3 +18,18 @@ out/
 
 # Handoff bundle / inspection inputs (proprietary image + audit packaging).
 handoff/
+
+# ---------------------------------------------------------------------------
+# Proprietary vendor blobs (QTI TEE chain: qseecomd, QTI Keymaster 3.0, QTI
+# Gatekeeper 1.0 + libraries). Xiaomi/Qualcomm code: never committed, never
+# redistributed. They are extracted locally from the user's own sakura stock
+# fastboot ROM by build/extract_blobs.sh and installed by build/install_blobs.sh.
+# The manifest and the tooling ARE tracked; only the binaries are ignored.
+# ---------------------------------------------------------------------------
+vendor_blobs/
+device/xiaomi/sakura/blob_install.mk
+# Only the blob directories inside recovery/root are ignored - the tracked
+# recovery.fstab, twrp.flags and init fragments live in system/etc and the
+# ramdisk root and must stay versioned.
+device/xiaomi/sakura/recovery/root/system/bin/
+device/xiaomi/sakura/recovery/root/system/lib64/

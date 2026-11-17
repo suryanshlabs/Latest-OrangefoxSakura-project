@@ -5,11 +5,13 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 **`fox_12.1`** manifest, preserving the behaviour of the last official release
 (**R11.0_5**) while extending it toward modern ROMs.
 
-> **Status: source fixes applied and statically checked. NOT built, NOT
-> flashed, NOT tested on hardware.** The old ServerHive self-hosted runner has
-> expired and is no longer referenced by the workflow. Nothing here has been
-> validated on a device. Read `documentation/TEST_REPORT.md` before trusting
-> any claim, and do not flash anything without your own rollback plan.
+> **Status: source fixes applied, tooling tested, NOT built, NOT flashed, NOT
+> tested on hardware.** The old ServerHive self-hosted runner has expired and is
+> no longer referenced by the workflow. The crypto dependency chain is now
+> reproducible (extract → install → gate → verify), but its firmware input has
+> never been supplied here, so **no decryption claim is made**. Read
+> `documentation/TEST_REPORT.md` before trusting any claim, and do not flash
+> anything without your own rollback plan.
 
 ---
 
@@ -31,39 +33,68 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 ```
 device/xiaomi/sakura/     the R12 device tree (the actual port)
   BoardConfig.mk          arch, kernel, partitions, crypto flags
-  device.mk               qcom_decrypt + qcom_decrypt_fbe, recovery modules
+  device.mk               ramdisk file installs + blob fragment include
   fox_sakura.mk           OrangeFox product (was missing upstream)
   twrp_sakura.mk          plain TWRP fallback product
   AndroidProducts.mk      lunch targets
   vendorsetup.sh          FOX_*/OF_* build vars ported from R11
-  recovery/root/          fstab, twrp.flags, init.recovery.qcom.rc
+  recovery/root/          fstab, twrp.flags, init.recovery.qcom.rc,
+                          init.recovery.qcom_decrypt.rc (TEE services)
   proprietary-files.txt   required QTI crypto blobs + provenance warning
   prebuilt/README.md      kernel provenance and how to supply it
 manifest/                 pinned refs + sync recipe
-build/                    fetch_reference, fetch_kernel, sync, build, verify_image
-tools/                    bootimg.py, verify_dtb.py (dependency-free)
+build/                    check_deps, fetch_reference, fetch_kernel, sync,
+                          extract_blobs, install_blobs, check_crypto_blobs,
+                          build, verify_image, run-all
+tools/                    bootimg.py, verify_dtb.py, elf.py, simg2img.py,
+                          check_init_services.py, static_checks.py
+tests/                    regression tests for the extraction toolchain
 documentation/            full audit: sources, kernel, encryption, compatibility,
-                          plus BUILD_TROUBLESHOOTING.md (the Soong/first-build issues)
+                          BUILD_FROM_CLEAN_CLONE.md, BUILD_TROUBLESHOOTING.md
 testing/android-9..17/    per-ROM-generation test records (empty = untested)
 ```
 
+`vendor_blobs/`, `device/xiaomi/sakura/blob_install.mk` and the installed
+`recovery/root/system/{bin,lib64}` are **gitignored**: they hold proprietary
+Xiaomi/Qualcomm binaries that only the user's own firmware can supply.
+
 ## Quick start
 
-On a compatible Linux x86_64 host (see `documentation/BUILD_INSTRUCTIONS.md`
-§1: >=45 GB free, >=8 GB RAM, not root), one command does everything:
+On a compatible Linux x86_64 host (>=45 GB free, >=8 GB RAM, not root), one
+command does everything:
 
 ```bash
+./build/check_deps.sh                          # optional, seconds: proves the host
+./build/extract_blobs.sh --firmware sakura_*_images_*.tgz   # see below
+./build/install_blobs.sh
 ./build/run-all.sh "$HOME/orangefox/fox_12.1"
 ```
 
-It runs static checks, the pinned sync, the kernel fetch + DTB verification,
-the single `recoveryimage` build and the hard structural verification, then
-prints the image path and SHA-256.
+`run-all.sh` runs the host preflight, static checks, the TEE blob gate, the
+pinned sync, the kernel fetch + DTB verification, the single `recoveryimage`
+build and the hard structural + init-service verification, then prints the
+image path and SHA-256.
 
-Structural checks alone, no source needed:
+**The one input this repository cannot supply** is the vendor TEE chain
+(`qseecomd`, QTI Keymaster 3.0, QTI Gatekeeper 1.0 + libraries). It is
+proprietary, so `build/extract_blobs.sh` extracts it from *your own* sakura
+Android 9 stock **fastboot** ROM (`V12.0.4.0.PDMMIXM` Global/India or
+`V12.0.1.0.PDICNXM` China), verifies device identity and ELF architecture, and
+records SHA-256 provenance under the gitignored `vendor_blobs/`. Without it the
+build stops rather than producing an image that cannot decrypt; to build a
+no-decryption image deliberately:
+
+```bash
+SAKURA_ALLOW_MISSING_CRYPTO=1 ./build/run-all.sh
+```
+
+Full step-by-step: [`documentation/BUILD_FROM_CLEAN_CLONE.md`](documentation/BUILD_FROM_CLEAN_CLONE.md).
+
+Structural checks and the toolchain's own tests, no source needed:
 
 ```bash
 python3 tools/static_checks.py
+python3 -m unittest discover -s tests -v
 ```
 
 Reference analysis (no root, no extra packages, ~46 MB):

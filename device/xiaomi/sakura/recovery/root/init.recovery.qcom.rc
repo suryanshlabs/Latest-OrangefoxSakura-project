@@ -1,10 +1,14 @@
 #
 # init.recovery.qcom.rc — sakura (MSM8953) recovery init
 #
-# R11.0_5 brought up crypto manually (sbinqseecomd + prepdecrypt + explicit
-# keymaster/gatekeeper services). R12 ships the qcom_decrypt framework, which
-# provides its own init fragment; this file keeps the R11 hardware bring-up
-# (bootdevice symlink, health HAL) and imports the R12 fragment.
+# Installed into the ramdisk by PRODUCT_COPY_FILES in device.mk. That step is
+# not automatic: the pinned OrangeFox trees do not copy a device tree's
+# recovery/root, so without the explicit copy this file (and twrp.flags) never
+# reached the ramdisk at all.
+#
+# It is imported by the pinned etc/init.rc through
+#     import /init.recovery.${ro.hardware}.rc
+# where ro.hardware=qcom comes from BOARD_KERNEL_CMDLINE androidboot.hardware=qcom.
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,7 +24,11 @@ on fs
     chown system drmrpc /dev/qseecom
     chmod 0664 /dev/ion
     chown system system /dev/ion
-    install_keyring
+
+# `install_keyring` used to sit in on fs. It is not an init builtin in the
+# pinned bootable/recovery (git grep across the tree at 8d2aad19 finds no such
+# keyword or builtin), so init rejected that line and aborted the whole on fs
+# block - which is why the bootdevice symlink below it was not guaranteed.
 
 # No health HAL: TW_USE_LEGACY_BATTERY_SERVICES handles battery/charging via
 # the legacy sysfs interface, exactly as R11.0_5 did.
@@ -31,6 +39,11 @@ on init
     # also sets androidboot.selinux=permissive.
     setprop sys.usb.config adb
 
-# qcom_decrypt (FDE) and qcom_decrypt_fbe (FBE) services/actions.
-# Provided by the OrangeFox vendor/recovery tree.
+# TEE chain: qseecomd, QTI Keymaster 3.0 and QTI Gatekeeper 1.0.
+#
+# This fragment ships with THIS device tree
+# (recovery/root/init.recovery.qcom_decrypt.rc). It is not provided by
+# vendor/recovery: at the pinned revision (1998cfc) that tree has no
+# qcom_decrypt module and no such rc file, which is why the import used to
+# fail and no TEE service ever started.
 import /init.recovery.qcom_decrypt.rc

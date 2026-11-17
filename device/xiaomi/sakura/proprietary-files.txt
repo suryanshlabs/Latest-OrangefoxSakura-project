@@ -1,59 +1,76 @@
-# proprietary-files.txt — recovery-only QTI crypto blobs for sakura
+# proprietary-files.txt — recovery-only QTI TEE / crypto blobs for sakura
 #
-# *** PROVENANCE WARNING — VERIFY BEFORE RELEASE ***
-# The community tree this list was derived from (msm8953E/device_xiaomi_sakura_twrp
-# @ ofx-12.1) states in its own header that these blobs come from
+# WHAT THIS FILE IS
+# -----------------
+# A manifest consumed by two scripts:
+#
+#   build/extract_blobs.sh   reads a stock vendor.img, validates and copies
+#                            exactly these files into vendor_blobs/ (gitignored)
+#                            and writes a local checksum + provenance report.
+#   build/install_blobs.sh   copies the validated vendor_blobs/ set into
+#                            device/xiaomi/sakura/recovery/root/ and generates
+#                            blob_install.mk so the build packs them.
+#
+# FORMAT
+#   <path inside vendor.img>:<path relative to the recovery ramdisk>|<required|optional>|[sha256]
+#
+#   * The source path is relative to the ROOT of vendor.img from a Xiaomi
+#     fastboot ROM (vendor.img root == the device's /vendor). "/" and a
+#     "vendor/" prefix are also accepted for tolerance.
+#   * The destination is relative to the recovery ramdisk, and MUST equal the
+#     executable path used by the init service in
+#     recovery/root/init.recovery.qcom_decrypt.rc. tools/check_init_services.py
+#     enforces that equality; it is not a convention, it is a build gate.
+#   * "required" means the file must exist in the supplied firmware; a missing
+#     required entry aborts extraction. "optional" entries are extracted and
+#     hashed when present, and skipped when the firmware does not ship them —
+#     but if the TEE chain actually links against one, the DT_NEEDED resolution
+#     check still fails the build. Optional is not a way to hide a dependency.
+#   * The sha256 column is "-" until extraction records the real value. Hashes
+#     are recorded in vendor_blobs/EXTRACTION_REPORT.md and
+#     vendor_blobs/MANIFEST.sha256, which are LOCAL ONLY. Never invent a hash.
+#
+# WHY THIS IS 64-BIT ONLY
+# -----------------------
+# The recovery ramdisk is built from core_64_bit_only.mk; tools/elf.py rejects
+# anything that is not ELFCLASS64/EM_AARCH64 before it can be installed.
+#
+# PROVENANCE — READ BEFORE BUILDING
+# ---------------------------------
+# The community tree these paths were first taken from
+# (msm8953E/device_xiaomi_sakura_twrp @ ofx-12.1) states its blobs come from
 #     daisy-user 10 QKQ1.191002.002 V11.0.21.0.QDLMIXM release-keys
-# i.e. from the Mi A2 Lite (daisy), NOT from sakura. Same SoC family, same
-# ro.hardware.keystore=msm8953 backend, so they are very likely ABI-compatible,
-# but that is an ASSUMPTION. Replace them with blobs extracted from a sakura
-# Android 9 stock image (V12.0.x.x.PDI*) and record the SHA-1 here.
-# Procedure: documentation/DEPENDENCIES.md §4.
+# i.e. Mi A2 Lite (daisy), NOT sakura. They are not redistributed here and are
+# NOT verified for sakura. Extract your own from a sakura Android 9 fastboot
+# ROM (V12.0.4.0.PDMMIXM Global or V12.0.1.0.PDICNXM China); the extraction
+# report records the firmware file, its SHA-256, the vendor.img SHA-256 and the
+# vendor build fingerprint so the provenance of a given build is auditable.
 #
-# Format:  <source path in vendor image>:<destination in recovery root>|<sha1>
-#
-# These are Xiaomi/Qualcomm proprietary binaries. They are NOT redistributed by
-# this repository; extract them from your own device/stock image.
-#
-# DESTINATION PATHS: nothing in this file creates files. Whatever you extract
-# must land at the path the recovery init rc actually executes. fox_12.1's
-# recovery root uses /system/bin for Android 12+ services, while the legacy
-# imports in this device tree still read /sbin. The undecided part is exactly
-# the sbin-vs-system/bin question, so before extracting run:
-#
-#     ./build/check_crypto_blobs.sh /path/to/fox_12.1
-#
-# It prints which of these are missing AND which paths the synced
-# vendor/recovery + bootable/recovery init rc files reference. Place the blobs
-# at those referenced paths (and verify each one's DT_NEEDED libraries resolve
-# inside the ramdisk), then update the destinations below to match.
-#
-# STATUS: with this list unpopulated, DECRYPTION IS UNVERIFIED. Do not report
-# FDE or FBE as working for an image built from a tree without these blobs.
-# Evidence for why: documentation/IMAGE_AUDIT.md.
+# These are Xiaomi/Qualcomm proprietary binaries. This repository does not
+# contain them and never will. See documentation/DEPENDENCIES.md section 4.
 
-# --- TEE / keymaster / gatekeeper services ---------------------------------
-vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti:recovery/root/sbin/android.hardware.gatekeeper@1.0-service-qti
-vendor/bin/hw/android.hardware.keymaster@3.0-service-qti:recovery/root/sbin/android.hardware.keymaster@3.0-service-qti
-vendor/bin/qseecomd:recovery/root/sbin/qseecomd
+# --- TEE / keymaster / gatekeeper services (started by init) ---------------
+bin/qseecomd:system/bin/qseecomd|required|-
+bin/hw/android.hardware.keymaster@3.0-service-qti:system/bin/android.hardware.keymaster@3.0-service-qti|required|-
+bin/hw/android.hardware.gatekeeper@1.0-service-qti:system/bin/android.hardware.gatekeeper@1.0-service-qti|required|-
 
-# --- HAL implementations ---------------------------------------------------
-vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so:recovery/root/vendor/lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so
-vendor/lib64/hw/android.hardware.keymaster@3.0-impl-qti.so:recovery/root/vendor/lib64/hw/android.hardware.keymaster@3.0-impl-qti.so
-vendor/lib64/hw/gatekeeper.msm8953.so:recovery/root/vendor/lib64/hw/gatekeeper.msm8953.so
-vendor/lib64/hw/keystore.msm8953.so:recovery/root/vendor/lib64/hw/keystore.msm8953.so
+# --- HAL implementations (loaded by the services above) -------------------
+lib64/hw/android.hardware.keymaster@3.0-impl-qti.so:system/lib64/android.hardware.keymaster@3.0-impl-qti.so|required|-
+lib64/hw/android.hardware.gatekeeper@1.0-impl-qti.so:system/lib64/android.hardware.gatekeeper@1.0-impl-qti.so|required|-
+lib64/hw/keystore.msm8953.so:system/lib64/keystore.msm8953.so|optional|-
+lib64/hw/gatekeeper.msm8953.so:system/lib64/gatekeeper.msm8953.so|optional|-
 
-# --- QTI support chain required by the HALs above --------------------------
-vendor/lib64/libQSEEComAPI.so:recovery/root/vendor/lib64/libQSEEComAPI.so
-vendor/lib64/libGPreqcancel.so:recovery/root/vendor/lib64/libGPreqcancel.so
-vendor/lib64/libGPreqcancel_svc.so:recovery/root/vendor/lib64/libGPreqcancel_svc.so
-vendor/lib64/libSecureUILib.so:recovery/root/vendor/lib64/libSecureUILib.so
-vendor/lib64/libStDrvInt.so:recovery/root/vendor/lib64/libStDrvInt.so
-vendor/lib64/libdiag.so:recovery/root/vendor/lib64/libdiag.so
-vendor/lib64/libdrmfs.so:recovery/root/vendor/lib64/libdrmfs.so
-vendor/lib64/libdrmtime.so:recovery/root/vendor/lib64/libdrmtime.so
-vendor/lib64/libkeymasterdeviceutils.so:recovery/root/vendor/lib64/libkeymasterdeviceutils.so
-vendor/lib64/libqisl.so:recovery/root/vendor/lib64/libqisl.so
-vendor/lib64/librpmb.so:recovery/root/vendor/lib64/librpmb.so
-vendor/lib64/libssd.so:recovery/root/vendor/lib64/libssd.so
-vendor/lib64/libtime_genoff.so:recovery/root/vendor/lib64/libtime_genoff.so
+# --- QTI support chain (DT_NEEDED of the files above) --------------------
+lib64/libQSEEComAPI.so:system/lib64/libQSEEComAPI.so|required|-
+lib64/libkeymasterdeviceutils.so:system/lib64/libkeymasterdeviceutils.so|required|-
+lib64/libGPreqcancel.so:system/lib64/libGPreqcancel.so|optional|-
+lib64/libGPreqcancel_svc.so:system/lib64/libGPreqcancel_svc.so|optional|-
+lib64/libSecureUILib.so:system/lib64/libSecureUILib.so|optional|-
+lib64/libStDrvInt.so:system/lib64/libStDrvInt.so|optional|-
+lib64/libdiag.so:system/lib64/libdiag.so|optional|-
+lib64/libdrmfs.so:system/lib64/libdrmfs.so|optional|-
+lib64/libdrmtime.so:system/lib64/libdrmtime.so|optional|-
+lib64/libqisl.so:system/lib64/libqisl.so|optional|-
+lib64/librpmb.so:system/lib64/librpmb.so|optional|-
+lib64/libssd.so:system/lib64/libssd.so|optional|-
+lib64/libtime_genoff.so:system/lib64/libtime_genoff.so|optional|-

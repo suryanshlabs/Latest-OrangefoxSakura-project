@@ -5,14 +5,34 @@
 #
 #   ./build/run-all.sh [SOURCE_DIR]        # SOURCE_DIR defaults to $HOME/orangefox/fox_12.1
 #
+# No other argument, environment variable or manual step is required.
+#
 # It performs, in order, and stops at the first failure:
-#   1. host preflight (disk, RAM, tools, repo)      - hard gates, no guessing
+#   1. host preflight (tools, disk, RAM, root)       - build/check_deps.sh
 #   2. static regression checks                      - tools/static_checks.py
-#   3. source sync at pinned refs  (skipped if the tree already has .repo)
-#   4. prebuilt kernel fetch + DTB verification      (skipped if already present)
-#   5. crypto-chain availability report              (never blocks; states the truth)
-#   6. one production recoveryimage build            (build/build.sh)
-#   7. hard structural verification                  (build/verify_image.sh)
+#   3. TEE blob preparation + decryption gate        - build/install_blobs.sh,
+#                                                      build/check_crypto_blobs.sh
+#   4. source sync at pinned refs  (skipped if the tree already has .repo)
+#   5. device tree + prebuilt kernel + DTB verification
+#   6. decryption gate against the synced tree
+#   7. one production recoveryimage build            - build/build.sh
+#   8. hard structural + init-service verification   - build/verify_image.sh
+#
+# THE ONE INPUT YOU MUST SUPPLY
+# -----------------------------
+# Step 3 needs the vendor TEE chain (qseecomd, QTI Keymaster 3.0, QTI
+# Gatekeeper 1.0 + libraries). They are Xiaomi/Qualcomm proprietary code and
+# are neither committed here nor downloadable by this repository. Extract them
+# once from YOUR OWN sakura Android 9 stock fastboot ROM:
+#
+#   ./build/extract_blobs.sh --firmware <sakura fastboot ROM>.tgz
+#   ./build/install_blobs.sh
+#
+# Without that, step 3 stops with instructions instead of producing an image
+# that claims decryption support it does not have. To build an explicitly
+# no-decryption image for other work:
+#
+#   SAKURA_ALLOW_MISSING_CRYPTO=1 ./build/run-all.sh
 #
 # Requirements: Linux x86_64, not root, >=45 GB free (60 GB comfortable),
 # >=8 GB RAM (16 GB recommended), and the packages in
@@ -30,31 +50,37 @@ DEST="${1:-$HOME/orangefox/fox_12.1}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[ "$(id -u)" != "0" ] || die "do not build as root"
-command -v repo >/dev/null || die "repo not found: https://storage.googleapis.com/git-repo-downloads/repo"
-for t in git curl python3 rsync unzip zip bc bison flex gcc g++ make ccache cpio lz4; do
-    command -v "$t" >/dev/null || die "missing build tool '$t' (documentation/DEPENDENCIES.md section 1)"
-done
-
-mem_mb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 ))
-[ "$mem_mb" -ge 7000 ] || die "need >=8 GB RAM, this host has ${mem_mb} MB"
-
-mkdir -p "$(dirname "$DEST")"
-avail_gb=$(df -BG --output=avail "$(dirname "$DEST")" | tail -1 | tr -dc '0-9')
-[ "${avail_gb:-0}" -ge 45 ] || die "need >=45 GB free at $(dirname "$DEST"), have ${avail_gb} GB"
-
 echo "############################################################"
 echo "# OrangeFox R12.0 sakura build"
-echo "#   source : $DEST"
-echo "#   disk   : ${avail_gb} GB free   RAM: ${mem_mb} MB   cpus: $(nproc)"
+echo "#   repository : $ROOT"
+echo "#   source     : $DEST"
+echo "#   mode       : $([ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ] \
+        && echo 'NO-DECRYPTION (SAKURA_ALLOW_MISSING_CRYPTO=1)' || echo 'full (decryption gate enforced)')"
 echo "############################################################"
 
-echo; echo "### 1/7 static checks"
+echo; echo "### 1/8 host preflight"
+# Full preflight for a real build; the old inline checks here duplicated it.
+"$ROOT/build/check_deps.sh" --dest "$DEST"
+
+echo; echo "### 2/8 static checks"
 python3 "$ROOT/tools/static_checks.py"
 
-echo; echo "### 2/7 preflight complete"
+echo; echo "### 3/8 TEE blobs (proprietary, user-supplied)"
+if [ -f "$ROOT/vendor_blobs/MANIFEST.sha256" ]; then
+    "$ROOT/build/install_blobs.sh"
+else
+    echo "no vendor_blobs/ set found in this clone"
+fi
+if [ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ]; then
+    echo "SAKURA_ALLOW_MISSING_CRYPTO=1: decryption gate skipped by request"
+    echo "the image from this run cannot decrypt /data"
+    "$ROOT/build/check_crypto_blobs.sh" || true
+else
+    "$ROOT/build/check_crypto_blobs.sh" --require || die \
+        "TEE blob gate failed - see the instructions above (documentation/DEPENDENCIES.md section 4)"
+fi
 
-echo; echo "### 3/7 source sync"
+echo; echo "### 4/8 source sync"
 if [ -d "$DEST/.repo" ]; then
     echo "reusing existing tree at $DEST"
     "$ROOT/build/sync.sh" --relink-only "$DEST"
@@ -62,7 +88,7 @@ else
     "$ROOT/build/sync.sh" "$DEST"
 fi
 
-echo; echo "### 4/7 device tree + kernel"
+echo; echo "### 5/8 device tree + kernel"
 mkdir -p "$DEST/device/xiaomi/sakura"
 rsync -a --exclude 'prebuilt/Image.gz-dtb' \
       "$ROOT/device/xiaomi/sakura/" "$DEST/device/xiaomi/sakura/"
@@ -75,18 +101,25 @@ else
 fi
 python3 "$ROOT/tools/verify_dtb.py" "$K"
 
-echo; echo "### 5/7 crypto chain"
-"$ROOT/build/check_crypto_blobs.sh" "$DEST"
+echo; echo "### 6/8 decryption gate on the synced tree"
+if [ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ]; then
+    "$ROOT/build/check_crypto_blobs.sh" "$DEST" || true
+else
+    "$ROOT/build/check_crypto_blobs.sh" --require "$DEST"
+fi
 
-echo; echo "### 6/7 build"
+echo; echo "### 7/8 build"
 "$ROOT/build/build.sh" "$DEST"      # includes hard structural verification
 
-echo; echo "### 7/7 done"
+echo; echo "### 8/8 done"
 IMG="$DEST/out/target/product/sakura/OrangeFox-unofficial-sakura.img"
 [ -f "$IMG" ] || IMG="$DEST/out/target/product/sakura/recovery.img"
 echo "image : $IMG"
 echo "size  : $(stat -c %s "$IMG") bytes"
 echo "sha256: $(sha256sum "$IMG" | cut -d' ' -f1)"
 echo
+if [ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ]; then
+    echo "This image was built WITHOUT the TEE chain: it cannot decrypt /data."
+fi
 echo "Next: flash MANUALLY at your own risk, or run the tests in testing/android-N/."
 echo "Nothing here proves a boot or a decryption result."

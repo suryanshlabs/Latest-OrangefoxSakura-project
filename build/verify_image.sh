@@ -11,8 +11,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="${1:-}"
-IMG="${2:-}"
+SRC=""
+IMG=""
+REQUIRE_CRYPTO=0
+for arg in "$@"; do
+    case "$arg" in
+        --require-crypto) REQUIRE_CRYPTO=1 ;;
+        -*) echo "ERROR: unknown option $arg" >&2; exit 2 ;;
+        *)  if [ -z "$SRC" ]; then SRC="$arg"; else IMG="$arg"; fi ;;
+    esac
+done
 
 if [ -z "$IMG" ]; then
     [ -n "$SRC" ] || { echo "usage: $0 [source-tree] [image]" >&2; exit 1; }
@@ -66,6 +74,19 @@ fi
 echo "==> ramdisk contents"
 python3 "${ROOT}/tools/bootimg.py" unpack "$IMG" "$TMP/u" >/dev/null
 python3 "${ROOT}/tools/bootimg.py" cpiotoc "$TMP/u/ramdisk.cpio" "$TMP/rd" >/dev/null
+# --- ramdisk layout, as measured in the pinned bootable/recovery -----------
+# fox_12.1 puts binaries in /system/bin, libraries in /system/lib64 and keeps
+# only the sh/bash symlinks in /sbin; init exports
+# PATH=/sbin:/system/bin and LD_LIBRARY_PATH=/system/lib64:/vendor/lib64/hw.
+# A file placed anywhere else is invisible to init and to the linker.
+echo "==> ramdisk layout"
+for f in system/bin/linker64 system/bin/recovery system/bin/toybox \
+         system/etc/init/hwservicemanager.rc system/etc/init/servicemanager.rc \
+         init.recovery.qcom.rc init.recovery.qcom_decrypt.rc ; do
+    [ -e "$TMP/rd/$f" ] && ok "ramdisk contains /$f" \
+        || bad "ramdisk is missing /$f"
+done
+
 for f in \
     etc/recovery.fstab \
     system/etc/twrp.flags \
@@ -137,10 +158,31 @@ for b in qseecomd android.hardware.keymaster@3.0-service-qti \
     fi
 done
 if [ "$crypto_found" = 3 ]; then
-    echo "  [info] chain present - but decryption is still UNTESTED on hardware"
+    ok "TEE chain present in the ramdisk"
 else
-    echo "  [info] missing:$crypto_missing"
-    echo "  [info] DECRYPTION: UNVERIFIED - extract the blobs (documentation/DEPENDENCIES.md section 4)"
+    if [ "$REQUIRE_CRYPTO" = 1 ]; then
+        bad "TEE chain incomplete in the built ramdisk: missing${crypto_missing}"
+    else
+        echo "  [info] missing:$crypto_missing"
+        echo "  [info] DECRYPTION: UNVERIFIED - extract the blobs (documentation/DEPENDENCIES.md section 4)"
+    fi
+fi
+
+# --- init service resolvability, in the ramdisk the device boots ----------
+# This is the check the audited handoff image would have failed: it had no
+# qseecomd, no QTI Keymaster/Gatekeeper service, and an init fragment whose
+# import target did not exist, so nothing ever started the TEE chain.
+echo "==> init services resolve in the built ramdisk"
+INIT_ARGS=(--ramdisk "$TMP/rd")
+if [ "$REQUIRE_CRYPTO" = 1 ]; then
+    INIT_ARGS+=(--require crypto)
+fi
+if python3 "${ROOT}/tools/check_init_services.py" "${INIT_ARGS[@]}" > "$TMP/init.txt" 2>&1; then
+    sed 's/^/  /' "$TMP/init.txt"
+    ok "every init service executable, interpreter and DT_NEEDED library resolves"
+else
+    sed 's/^/  /' "$TMP/init.txt"
+    bad "init service resolution failed (see above)"
 fi
 grep -rqs 'metadata_encryption' "$TMP/rd" 2>/dev/null \
     && echo "  [warn] metadata_encryption present - NOT supportable on sakura, remove it"

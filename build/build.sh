@@ -37,6 +37,29 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 avail_gb=$(df -BG --output=avail "$SRC" | tail -1 | tr -dc '0-9')
 [ "${avail_gb:-0}" -ge 20 ] || die "need >=20 GB free inside $SRC for build output, have ${avail_gb} GB"
 
+# --- host preflight (tools only; disk/RAM are checked above and by run-all) --
+"$ROOT/build/check_deps.sh" --quick --dest "$SRC" || die \
+    "host is missing required build tooling (output above lists the packages)"
+
+# --- decryption gate --------------------------------------------------------
+# An image built without the vendor TEE chain cannot decrypt anything, and
+# every previous artefact of this port claimed FDE/FBE support while missing
+# that chain. The gate is therefore fatal by default.
+#
+# SAKURA_ALLOW_MISSING_CRYPTO=1 builds an explicitly no-decryption image for
+# other work (UI, partitioning, backup). It does not make decryption work; the
+# resulting image must never be reported as decrypting, and the workflow input
+# of the same name carries the same restriction.
+if [ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ]; then
+    echo "==> WARNING: SAKURA_ALLOW_MISSING_CRYPTO=1 - skipping the TEE blob gate"
+    echo "    The image produced by this run CANNOT decrypt /data. Do not report"
+    echo "    FDE/FBE as working for it."
+    "$ROOT/build/check_crypto_blobs.sh" "$SRC" || true
+else
+    "$ROOT/build/check_crypto_blobs.sh" --require "$SRC" || die \
+        "TEE blob gate failed; see documentation/DEPENDENCIES.md section 4"
+fi
+
 # --- JDK 11 -----------------------------------------------------------------
 # Soong 12.1 requires JDK 11. Prefer an existing JAVA_HOME, otherwise obtain the
 # portable Temurin build (no root needed) and make it win in PATH. Exported
@@ -156,7 +179,11 @@ mtime=$(stat -c %Y "$IMG")
 echo "==> image: $IMG ($(stat -c %s "$IMG") bytes, sha256 $(sha256sum "$IMG" | cut -d' ' -f1))"
 
 # --- structural verification is part of a successful build -----------------
-"$ROOT/build/verify_image.sh" "$SRC" "$IMG"
+if [ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ]; then
+    "$ROOT/build/verify_image.sh" "$SRC" "$IMG"
+else
+    "$ROOT/build/verify_image.sh" "$SRC" "$IMG" --require-crypto
+fi
 echo
 echo "==> build + structural verification complete."
 echo "    image : $IMG"

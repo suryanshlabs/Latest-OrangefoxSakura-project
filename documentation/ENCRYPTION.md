@@ -116,7 +116,8 @@ hardware, and the blocker is architectural, not a build flag:
 | `/data` fstab | ext4 + footer | f2fs **and** ext4, `fileencryption=ice`, keep `encryptable=footer` | support both FBE and legacy FDE |
 | `/system` | ext4, SAR auto-detect | `/system_root` entries in twrp.flags (as community tree) | modern ROMs are system-as-root |
 | kernel | 3.18.120 stock (no fscrypt) | 4.9.278 with fscrypt + f2fs | FBE requires it |
-| crypto packages | libcryptfsfde + KM3 | `qcom_decrypt` + `qcom_decrypt_fbe`, KM3.0 HAL | R12's decryption framework |
+| crypto implementation | libcryptfsfde + KM3 | `bootable/recovery`'s own crypto (`TW_INCLUDE_CRYPTO` + `TW_INCLUDE_CRYPTO_FBE`), KM3.0 HAL | the `qcom_decrypt` modules an earlier revision listed **do not exist** in the pinned trees |
+| TEE services | manual R11 bring-up | `recovery/root/init.recovery.qcom_decrypt.rc`: `qseecomd`, `vendor.keymaster-3-0`, `vendor.gatekeeper-1-0` at `/system/bin/...`, started `on boot` / on `init.svc.qseecomd=running` | nothing upstream declares these services |
 | metadata encryption | n/a | **not supported — documented** | no dm-default-key / KM4 |
 | keymaster version | 3.0 | 3.0 (`OF_DEFAULT_KEYMASTER_VERSION := 3.0`) | vendor reality |
 
@@ -128,14 +129,17 @@ hardware, and the blocker is architectural, not a build flag:
 | FDE footer decryption | **not tested** (no hardware); same mechanism as R11 |
 | FBE (ICE) decryption | **not tested**; kernel capability verified by string evidence only |
 | Metadata encryption | **not supportable** — proven absent from both kernels |
-| Keymaster 3.0 / Gatekeeper 1.0 / qseecomd present | **missing in the audited image** — see `IMAGE_AUDIT.md`; blobs are proprietary and not committed |
-| Keymaster 3.0 service start in recovery | **not tested** |
+| Keymaster 3.0 / Gatekeeper 1.0 / qseecomd present | **missing in the audited image** — see `IMAGE_AUDIT.md`; blobs are proprietary and not committed. Extraction is scripted (`DEPENDENCIES.md` §4) and gated (`build/check_crypto_blobs.sh --require`) |
+| init services resolvable (path, ELF machine, interpreter, transitive `DT_NEEDED`) | **statically enforced** by `tools/check_init_services.py`, on the device tree and on the built ramdisk |
+| Keymaster 3.0 service start in recovery | **not tested** (needs the device) |
 
 Consequence: with the QTI blobs absent, **no decryption capability is claimed
-for any image built from this tree**. The fstab declares both mechanisms so a
-build that *does* include the extracted blobs can attempt them, and
-`build/check_crypto_blobs.sh` / `build/verify_image.sh` state that status
-plainly instead of inferring success from a flag.
+for any image built from this tree**, and the build is refused unless the
+missing chain is an explicit, recorded choice (`SAKURA_ALLOW_MISSING_CRYPTO=1`).
+The fstab declares both mechanisms so a build that *does* include the extracted
+blobs can attempt them, and `build/check_crypto_blobs.sh` /
+`build/verify_image.sh` state that status plainly instead of inferring success
+from a flag.
 
 One further caution, learned from the audited image: FBE without a working
 gatekeeper/keymaster chain makes TWRP block on the splash instead of failing
