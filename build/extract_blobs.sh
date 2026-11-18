@@ -184,13 +184,12 @@ echo "  vendor image: $RAW_VENDOR ($(stat -c %s "$RAW_VENDOR") bytes)"
 # ---------------------------------------------------------------------------
 echo "==> normalising vendor image"
 CONVERTED="$WORK/vendor.raw.img"
-if [ "$DRY_RUN" = 1 ]; then
-    python3 "${ROOT}/tools/simg2img.py" --info "$RAW_VENDOR" | sed 's/^/  /'
-    IMG_FOR_READ="$RAW_VENDOR"
-else
-    python3 "${ROOT}/tools/simg2img.py" "$RAW_VENDOR" "$CONVERTED" | sed 's/^/  /'
-    IMG_FOR_READ="$CONVERTED"
-fi
+python3 "${ROOT}/tools/simg2img.py" --info "$RAW_VENDOR" | sed 's/^/  /' || true
+# Always produce a readable raw ext4 image in the work directory: debugfs
+# cannot read an Android sparse image, so even --dry-run must probe a
+# converted copy. Nothing is written to $OUT until extraction succeeds.
+python3 "${ROOT}/tools/simg2img.py" "$RAW_VENDOR" "$CONVERTED" >/dev/null
+IMG_FOR_READ="$CONVERTED"
 VENDOR_SHA256="$(sha256sum "$RAW_VENDOR" | cut -d' ' -f1)"
 if [ -n "$FIRMWARE" ] && [ -f "$FIRMWARE" ]; then
     FIRMWARE_SHA256="$(sha256sum "$FIRMWARE" | cut -d' ' -f1)"

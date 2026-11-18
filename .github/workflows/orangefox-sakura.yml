@@ -314,6 +314,9 @@ jobs:
             [ -f "$GITHUB_WORKSPACE/$f" ] && cp "$GITHUB_WORKSPACE/$f" artifacts/ || true
           done
           python3 tools/static_checks.py > artifacts/static-checks.log 2>&1 || true
+          if [ '${{ inputs.allow_missing_crypto }}' = 'true' ]; then
+            printf 'NO DECRYPTION CAPABILITY\n\nThis artifact was built with allow_missing_crypto=true.\nThe vendor TEE chain was not required; the image CANNOT decrypt /data\n(FDE/FBE). Do not label or describe it as decryption-capable.\n' > artifacts/NO_DECRYPTION.txt
+          fi
           {
             echo "run:            $GITHUB_RUN_ID ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
             echo "commit:         $GITHUB_SHA"
@@ -322,7 +325,11 @@ jobs:
             echo "fox release:    $(grep -m1 FOX_BASE_VERSION "$(dirname "$SRC")/sync/orangefox_sync.sh" 2>/dev/null || echo 'unknown')"
             echo "device:         $DEVICE"
             echo "jobs:           ${{ inputs.parallel_jobs }} (0=auto)"
-            echo "decryption:     $([ '${{ inputs.allow_missing_crypto }}' = 'true' ] && echo 'BUILT WITHOUT TEE CHAIN - cannot decrypt /data' || echo 'TEE chain required and gated') "
+            if [ '${{ inputs.allow_missing_crypto }}' = 'true' ]; then
+              echo "decryption_capable: NO - BUILT WITHOUT TEE CHAIN (allow_missing_crypto=true); cannot decrypt /data"
+            else
+              echo "decryption_capable: gate required TEE chain (runtime UNTESTED on hardware)"
+            fi
             echo "disk at start:  ${{ needs.preflight.outputs.disk_gb }} GB"
             echo "memory:         ${{ needs.preflight.outputs.mem_mb }} MB"
             echo
