@@ -80,8 +80,10 @@ TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 # ---------------------------------------------------------------------------
 # Crypto
 #
-# FDE (crypto footer, Android 9 ROMs) and FBE (fileencryption=ice, Android
-# 10+ ROMs) are handled by bootable/recovery's own crypto code:
+# FDE (crypto footer, Android 9 ROMs) and FBE (declared with
+# fileencryption=ice, which android-12.1 libfscrypt maps to the vendor
+# FSCRYPT_MODE_PRIVATE contents format) are handled by bootable/recovery's own
+# crypto code:
 #   TW_INCLUDE_CRYPTO     -> -DTW_INCLUDE_CRYPTO -DUSE_FSCRYPT, libcryptfsfde,
 #                            libf2fs_sparseblock, libgpt_twrp, Keymaster/Gatekeeper
 #                            client libraries (Android.mk at the pinned SHA)

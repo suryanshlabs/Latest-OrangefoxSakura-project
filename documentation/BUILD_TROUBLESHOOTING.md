@@ -34,7 +34,7 @@ Order of likelihood for this device:
 
 | Module | Where it must come from | If missing |
 |---|---|---|
-| `qcom_decrypt`, `qcom_decrypt_fbe` | `vendor/recovery` (OrangeFox) | sync failed → re-clone vendor tree |
+| ~~`qcom_decrypt`, `qcom_decrypt_fbe`~~ | do not exist at the pinned revisions | **[fixed]** no longer referenced; decryption comes from `TW_INCLUDE_CRYPTO` / `TW_INCLUDE_CRYPTO_FBE` plus the device tree's TEE services |
 | `android.hidl.base@1.0` | `hardware/interfaces` | keep; present in 12.1 minimal manifest |
 | `libdrm`, `libion`, `libxml2`, `libicuuc` | `external/` + `system/` | present in 12.1 minimal manifest |
 | `vendor.display.config@1.0/2.0` | `hardware/interfaces` (system_ext) | **[expected]** if absent: delete those two lines from `device.mk`; only the display-config HAL loses a dependency, nothing else |

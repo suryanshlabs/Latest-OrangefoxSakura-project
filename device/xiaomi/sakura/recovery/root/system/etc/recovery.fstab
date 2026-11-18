@@ -2,8 +2,13 @@
 #
 # Parsed by vold/decrypt work. R11.0_5 used a legacy 4-column TWRP fstab with
 # an ext4-only /data and encryptable=footer (FDE). This R12 version keeps FDE
-# support for Android 9 ROMs and ADDS FBE (fileencryption=ice) for Android 10+
-# ROMs, plus an f2fs /data row so f2fs-formatted data can be mounted.
+# support for Android 9 ROMs and declares FBE via fileencryption=ice, plus an
+# f2fs /data row so f2fs-formatted data can be mounted.
+#
+# fileencryption=ice is not "inline crypto": the pinned recovery passes it to
+# fbe.contents, and android-12.1 libfscrypt maps it to FSCRYPT_MODE_PRIVATE (the
+# pre-Android-11 vendor contents format). Inline crypto would be the separate
+# 'inlinecrypt' mount option. See documentation/ENCRYPTION.md sect. 3.
 #
 # NOT declared on purpose: metadata_encryption= / keydirectory=.
 # sakura's vendor is Keymaster 3.0 and neither available kernel has
@@ -19,8 +24,10 @@
 /dev/block/bootdevice/by-name/cust             /cust       ext4   ro,barrier=1                              wait
 
 # /data — f2fs first (modern ROMs), ext4 second (stock / older ROMs).
-# encryptable=footer keeps legacy FDE working (Android 9); fileencryption=ice
-# enables FBE (Android 10+). quota/formattable are required by R12 tooling.
+# encryptable=footer keeps the legacy FDE key location (Android 9);
+# fileencryption=ice marks the row as FBE and selects the vendor 'ice' contents
+# mode. Both are only attempted when the TEE blobs are present; quota and
+# formattable are required by R12 tooling. See documentation/ENCRYPTION.md.
 #
 # SEPARATORS: AOSP fs_mgr tokenises the fs_mgr flags column on COMMAS, and
 # commas only. Never use ';' here: "encryptable=footer;fileencryption=ice" is

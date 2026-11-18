@@ -19,15 +19,34 @@ This document describes the **current** sakura OrangeFox R12.0 (`fox_12.1`) sour
 - **Vendor blobs** (`device/xiaomi/sakura/proprietary-files.txt`, `build/extract_blobs.sh`, `build/install_blobs.sh`, `build/check_crypto_blobs.sh`): proprietary TEE/HAL blobs are **not** committed. `0/20` are currently present in this workspace. Extraction is designed to be read-only from a user-supplied sakura Android 9 **fastboot** ROM and to record provenance/hashes locally under gitignored `vendor_blobs/`; installation generates a gitignored `blob_install.mk`. Without the required blobs, crypto-gated builds are refused by default (`build/check_crypto_blobs.sh --require`); `SAKURA_ALLOW_MISSING_CRYPTO=1` is an explicit non-decryption opt-out only.
 - **Boot/kernel/partitions**: unchanged by this documentation audit (no boot parameters, kernel, DTB, addresses, bootdevice command line, or partition size modified).
 
-## 3. `fileencryption=ice` and fs_mgr flag parsing (pinned recovery implementation)
+## 3. `fileencryption=ice` checked against the pinned recovery and android-12.1 code
 
-**What was verified (source/config evidence):**
-- The recovery fstab uses **comma-separated** fs_mgr flags: `encryptable=footer,fileencryption=ice,quota,formattable` on both `/data` rows. Repository checks enforce comma separation and reject `;` (`tools/static_checks.py`, and `build/verify_image.sh` for built images).
-- Against the pinned OrangeFox recovery source used by this project, **`bootable/recovery` @ `8d2aad19deb158e935d70ca5b648162c2b2831ee`** (`fox_12.1`), `partition.cpp` defines and parses `fileencryption=` as `TWFLAG_FILEENCRYPTION` and `encryptable=` as `TWFLAG_ENCRYPTABLE` (e.g. flag table entries for `encryptable=` / `fileencryption=` and handling that recognizes `fileencryption=...` values such as `ice` forms). This confirms the pinned recovery partition parser recognizes the `fileencryption=` flag token used in the device fstab.
+### 3.1 Pinned recovery parser — `bootable/recovery` @ `8d2aad19deb158e935d70ca5b648162c2b2831ee` (`fox_12.1`)
 
-**What this means / does not mean:**
-- The fstab flag syntax and tokenization are consistent with the pinned recovery parser and the project's static gates. This is **not** proof that FBE decryption will succeed on any ROM or device.
-- `fileencryption=ice` is the inline-crypto/ICE FBE indicator commonly used for Qualcomm legacy devices in recovery fstabs. Its exact runtime behavior depends on the pinned recovery/crypto code paths, installed vendor blobs, kernel crypto/fscrypt/ICE support, and the actual on-disk encryption state of `/data`. No runtime claim is made here.
+Read directly from that commit's `partition.cpp`:
+
+| Code path | Behaviour |
+|---|---|
+| `TWPartition::Process_Fstab_Line()` | A line starting with `/dev/` is treated as the AOSP 5-column format (`fstab_version = 2`); column 4 is handed to `Process_FS_Flags()` and column 5 is stored as the TWRP flag string (`twflags`). |
+| `TWPartition::Process_FS_Flags()` | Tokenises mount options with `strtok_r(..., ",", ...)` — commas only. |
+| `TWPartition::Process_TW_Flags()` | Chooses the separator from the fstab format: `source_separator = ','` when `fstab_ver == 2`. So `encryptable=footer;fileencryption=ice` is **one malformed token** and both options are silently lost; the comma-separated form is what the pinned parser actually reads. |
+| `TWFLAG_ENCRYPTABLE` | `case TWFLAG_ENCRYPTABLE: ... Crypto_Key_Location = str;` — the `footer` argument is retained as the crypto key location. |
+| `TWFLAG_FILEENCRYPTION` | Sets the runtime props `fbe.contents` / `fbe.filenames` from the `fileencryption=` argument. The in-source comment reads: *"This flag isn't used by TWRP but is needed in 9.0 FBE decrypt — fileencryption=ice:aes-256-heh"*. For this fstab that yields `fbe.contents=ice` and an empty `fbe.filenames`. |
+| FBE build gate | The FBE decryption code is compiled only under `TW_INCLUDE_FBE` (set by `TW_INCLUDE_CRYPTO_FBE := true` in this tree). FBE is detected at runtime from `/data/unencrypted/key/version` (`TWPartition::Decrypt_FBE_DE()`), and can be skipped with `OF_SKIP_FBE_DECRYPTION` / `OF_SKIP_FBE_DECRYPTION_SDKVERSION`. |
+| Metadata decryption gate | `partitionmanager.cpp` compiles the metadata path only under `TW_INCLUDE_FBE_METADATA_DECRYPT`; it also needs `metadata_encryption=` / `keydirectory=` fstab data. **This tree enables neither the macro nor the flags.** So metadata-encrypted `/data` is not handled by this configuration. |
+
+### 3.2 Android 12.1 fs_mgr / libfscrypt (the base `fox_12.1` is built on)
+
+| Code | Behaviour |
+|---|---|
+| `system/core/fs_mgr/fs_mgr_fstab.cpp` (android-12.1) | The fs_mgr flag column is split on `,` (`Split(flags, ",")`). `encryptable=` sets `fs_mgr_flags.crypt = true` and `key_loc`; `fileencryption=` calls `ParseFileEncryption()`, setting the `file_encryption` flag and `encryption_options` to the argument. Android 12.1 contains **no** rejection of `encryptable` without `voldmanaged` (that check exists only in later AOSP releases). |
+| `system/extras/libfscrypt/fscrypt.cpp` (android12-release) | `ParseOptionsForApiLevel()` maps the contents mode **`"ice"` to `FSCRYPT_MODE_PRIVATE` (127)** — a vendor-specific on-disk contents format, *not* "inline crypto". Inline crypto is requested by the separate `inlinecrypt` **mount** option; `fileencryption=ice` alone does not enable it. Default filenames mode stays `aes-256-cts`, and the policy version is `1` when `ro.product.first_api_level <= 29` (sakura's first API level is well below 29). |
+
+### 3.3 What this establishes, and what it does not
+
+- **Established:** the two `/data` rows use the token separator the pinned parser expects; `encryptable=footer` is retained as the crypto key location; `fileencryption=ice` reaches recovery as `fbe.contents=ice`; the FBE and metadata code paths exist behind build flags, and only the FBE one is enabled here.
+- **Caveat, not changed:** `ice` selects the pre-Android-11 vendor `PRIVATE` contents format. It is the correct historical format for sakura (an Android 9 launch device) and for ROMs formatted with that vendor mode, but a ROM that formatted `/data` with the standard `aes-256-xts` format will not match this declaration. AOSP also documents `fileencryption=ice` as valid only for devices launched with Android 10 or lower. The flag is therefore left exactly as it is; which ROMs match is recorded as an unverified per-ROM item instead of being guessed.
+- **Not established by any of the above:** that FBE decryption succeeds. That needs genuine vendor blobs, a built and verified image, a matching on-disk format, and device testing — none of which exist here.
 
 ## 4. Intended TEE / crypto integration (not runtime-proven)
 
@@ -45,7 +64,8 @@ The intended decryption stack for sakura is:
 |---|---|---|
 | **Android 9 (sakura stock era, e.g. MIUI 12 PD* builds), unencrypted `/data`** | Yes (mount/use) | Depends on normal mount/format behavior; not a decryption case. |
 | **Android 9 legacy FDE (`encryptable=footer`)** | **Intended** | FDE footer flag present; same general mechanism family as R11. Requires correct TEE stack/blobs and device validation. **Unverified.** |
-| **Android 10+ FBE without metadata encryption** (`fileencryption=ice`, fscrypt/ICE-capable kernel/ROM layout) | **Intended (best-effort target)** | FBE flag and FBE crypto build flags are configured; metadata encryption not declared. Requires correct blobs, compatible ROM/key state, and device validation. **Unverified.** |
+| **Android 10+ FBE without metadata encryption, `/data` formatted with the sakura vendor `ice` (`FSCRYPT_MODE_PRIVATE`) contents mode** | **Intended (best-effort target)** | FBE flag and FBE crypto build flags are configured; metadata encryption not declared. Requires correct blobs, compatible ROM/key state, and device validation. **Unverified.** |
+| **FBE where `/data` was formatted with the standard `aes-256-xts` contents mode** | **Unknown / likely mismatch** | The fstab declares `fileencryption=ice`, so `fbe.contents=ice`; a standard-format `/data` would not share that on-disk format. Not changed here (no assumption-based edits); must be confirmed per ROM with a real device and an encrypted `/data`. |
 | **FBE with metadata encryption** (`metadata_encryption=`, dm-default-key, etc.) | **No (unsupported)** | Not declared/configured. Sakura vendor/kernel constraints (KM 3.0 vendor, no dm-default-key support in the kernels relied on by this port) make this unsupported here. Do not advertise support. |
 | **Other/unknown encryption combinations** (e.g. ROM-specific wrapped-key/metadata variants, adoptable-storage-specific cases, future formats) | **Unknown** | Treat as unsupported until analyzed and device-tested with evidence. |
 | **Android 16 / 17 on sakura** | **Unknown / not applicable** | No sakura ROM/device-tree evidence established in this project for those releases; compatibility cannot be claimed. |
@@ -56,7 +76,8 @@ The intended decryption stack for sakura is:
 |---|---|---|
 | Source fstab/config consistency (comma-separated `encryptable=footer,fileencryption=ice`, no metadata encryption declared, crypto flags/init wiring/static structure) | **PASS (static/config checks executed)** | `python3 tools/static_checks.py` → **PASS (50 checks)** on this tree in this workspace; expected warning: `0/20` proprietary blobs present, `DECRYPTION IS UNVERIFIED`. |
 | Tooling/unit regression tests (extraction/install/init/ELF/sparse helpers, committed device-tree checks) | **PASS (executed)** | `python3 -m unittest discover -s tests -v` → **Ran 18 tests, OK** in this workspace (synthetic fixtures; not a genuine firmware extraction). |
-| `fileencryption=ice` and `encryptable=` recognized by pinned recovery parser | **Verified by source inspection of pinned commit** | Checked `bootable/recovery@8d2aad19deb158e935d70ca5b648162c2b2831ee` (`partition.cpp`: `TWFLAG_FILEENCRYPTION` / `TWFLAG_ENCRYPTABLE` parsing). Runtime behavior not verified. |
+| Parsing of the fstab flag column by the pinned recovery | **Verified by source inspection** | `bootable/recovery@8d2aad19deb158e935d70ca5b648162c2b2831ee` `partition.cpp`: `Process_TW_Flags()` uses `,` as the separator for AOSP-format (`fstab_ver == 2`) lines; `TWFLAG_ENCRYPTABLE` stores the key location; `TWFLAG_FILEENCRYPTION` sets `fbe.contents` / `fbe.filenames`. Runtime behaviour not verified. |
+| `ice` meaning in the android-12.1 crypto library | **Verified by source inspection** | `system/extras/libfscrypt/fscrypt.cpp` (android12-release): `{"ice", FSCRYPT_MODE_PRIVATE}`; contents mode `ice` is vendor PRIVATE, not the `inlinecrypt` mount option. |
 | Genuine firmware blob extraction/integration | **Not completed** | No genuine sakura Android 9 fastboot ROM available in this environment; `0/20` blobs extracted/installed. |
 | Blob-dependent crypto gates with real blobs (`check_crypto_blobs.sh --require`, `check_init_services.py --require crypto`) | **Not executed with real blobs** | Cannot run meaningfully until genuine blobs are extracted/installed. |
 | Production recovery image build and image verification | **Not done** | No compatible build host/image build performed. |

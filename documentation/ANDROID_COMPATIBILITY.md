@@ -65,7 +65,7 @@ runtime, not build-time:
 |---|---|
 | system-as-root vs system | `/system_root` + `OF_USE_TWRP_SAR_DETECT` |
 | ext4 vs f2fs `/data` | both rows in fstab |
-| FDE vs FBE | `qcom_decrypt` + `qcom_decrypt_fbe` + `fileencryption=ice` row |
+| FDE vs FBE | `TW_INCLUDE_CRYPTO` / `TW_INCLUDE_CRYPTO_FBE`, `encryptable=footer` + `fileencryption=ice` rows, and the device tree's TEE init chain (`ENCRYPTION.md` §2–§4) |
 | kernel features | 4.9 kernel (f2fs, fscrypt) |
 | Treble/vndk | `OF_NO_TREBLE_COMPATIBILITY_CHECK := 1` (community tree) |
 

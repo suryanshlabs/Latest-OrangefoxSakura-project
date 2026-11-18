@@ -76,14 +76,13 @@ OrangeFox. See `BUILD_INSTRUCTIONS.md` §7.
 
 | Component | Provided by | Notes |
 |---|---|---|
-| `qcom_decrypt`, `qcom_decrypt_fbe` | `vendor/recovery` (OrangeFox) | R12 decryption framework, declared in `device.mk` |
-| `libinit_sakura` | `device/xiaomi/sakura/init` (Soong) | sets `ro.hardware.keystore=msm8953`-era init props |
-| `android.hardware.keymaster@3.0-service-qti` | prebuilt in `recovery/root/sbin` | vendor KM 3.0 HAL |
-| `android.hardware.gatekeeper@1.0-service-qti` | prebuilt in `recovery/root/sbin` | vendor gatekeeper HAL |
-| `qseecomd` | prebuilt in `recovery/root/sbin` | QSEECom daemon (TEE channel) |
-| `keystore.msm8953.so`, `gatekeeper.msm8953.so` | prebuilt `recovery/root/vendor/lib64/hw/` | TEE-backed key/gatekeeper impls |
+| recovery crypto implementation | `bootable/recovery` (`TW_INCLUDE_CRYPTO`, `TW_INCLUDE_CRYPTO_FBE`) | `qcom_decrypt` / `qcom_decrypt_fbe` do **not** exist at the pinned revisions and are not referenced |
+| `android.hardware.keymaster@3.0-service-qti` | prebuilt, installed to `recovery/root/system/bin` by `build/install_blobs.sh` | vendor KM 3.0 HAL |
+| `android.hardware.gatekeeper@1.0-service-qti` | prebuilt, installed to `recovery/root/system/bin` | vendor gatekeeper HAL |
+| `qseecomd` | prebuilt, installed to `recovery/root/system/bin` | QSEECom daemon (TEE channel) |
+| `keystore.msm8953.so`, `gatekeeper.msm8953.so` | prebuilt, installed to `recovery/root/system/lib64` (or `lib64/hw` per manifest) | TEE-backed key/gatekeeper impls |
 | `libQSEEComAPI.so`, `librpmb.so`, `libdiag.so`, `libssd.so`, `libdrmfs.so`, `libdrmtime.so`, `libtime_genoff.so`, `libqisl.so`, `libStDrvInt.so`, `libSecureUILib.so`, `libGPreqcancel*.so`, `libkeymasterdeviceutils.so` | prebuilt | QTI crypto/TEE support chain |
-| `health@2.0` HAL + VINTF manifests | prebuilt `recovery/root/**/vintf/manifest.xml` | required by R12 `PRODUCT_ENFORCE_VINTF_MANIFEST := true` |
+| VINTF manifests | not shipped | `PRODUCT_ENFORCE_VINTF_MANIFEST` is deliberately **not** set (`BoardConfig.mk`); no health@2.0 service is required |
 | `libdrm`, `libion`, `libxml2`, `libicuuc`, `vendor.display.config@1.0/2.0` | `device.mk` recovery modules | display/graphics + XML parsing for vintf |
 
 ### Provenance warning
