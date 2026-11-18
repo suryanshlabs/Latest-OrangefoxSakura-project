@@ -82,10 +82,40 @@ python3 "${ROOT}/tools/bootimg.py" cpiotoc "$TMP/u/ramdisk.cpio" "$TMP/rd" >/dev
 echo "==> ramdisk layout"
 for f in system/bin/linker64 system/bin/recovery system/bin/toybox \
          system/etc/init/hwservicemanager.rc system/etc/init/servicemanager.rc \
-         init.recovery.qcom.rc init.recovery.qcom_decrypt.rc ; do
+         init.recovery.qcom.rc init.recovery.qcom_decrypt.rc \
+         init.recovery.sakura_diag.rc system/bin/sakura-diag ; do
     [ -e "$TMP/rd/$f" ] && ok "ramdisk contains /$f" \
         || bad "ramdisk is missing /$f"
 done
+
+# --- boot diagnostics (feature gate) --------------------------------------
+# The collector and the Error Logs theme are a feature, not configuration.
+# If the pinned theme patch did not apply, fail here instead of shipping an
+# image whose Settings page is missing.
+echo "==> boot diagnostics"
+DIAG="$TMP/rd/system/bin/sakura-diag"
+[ -e "$DIAG" ] && ok "ramdisk contains /system/bin/sakura-diag" \
+    || bad "diagnostic collector missing from the ramdisk (PRODUCT_COPY_FILES)"
+if [ -e "$DIAG" ]; then
+    [ -x "$DIAG" ] && ok "collector is executable (init can exec it)" \
+        || bad "collector is not executable in the ramdisk"
+fi
+DIAG_THEME=$(find "$TMP/rd" -path '*twres/pages/diag.xml' 2>/dev/null | head -n 1 || true)
+if [ -n "$DIAG_THEME" ]; then
+    ok "Error Logs page installed ($(echo "$DIAG_THEME" | sed "s|$TMP/rd||"))"
+else
+    bad "twres/pages/diag.xml missing - the theme patch was not applied"
+fi
+if grep -rqs 'property.of.boot_diag_errors' "$TMP/rd" 2>/dev/null; then
+    ok "status-bar diagnostic badge installed"
+else
+    bad "status-bar badge missing (patched statusbar.xml not in the ramdisk)"
+fi
+if grep -rqs 'error_logs' "$TMP/rd"/twres/pages/settings.xml 2>/dev/null; then
+    ok "Settings menu links to Error Logs"
+else
+    bad "Settings menu has no Error Logs entry (theme patch not applied)"
+fi
 
 for f in \
     etc/recovery.fstab \

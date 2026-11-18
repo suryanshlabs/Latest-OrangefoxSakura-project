@@ -160,6 +160,18 @@ def check_product():
            "OF_DEFAULT_KEYMASTER_VERSION=3.0" in vs, "")
 
 
+def manifest_dests():
+    """Ramdisk destinations listed in proprietary-files.txt (installed by the
+    blob scripts, so they are not PRODUCT_COPY_FILES entries)."""
+    dests = set()
+    for line in read("device/xiaomi/sakura/proprietary-files.txt").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        dests.add(line.split(":", 1)[1].split("|", 1)[0].strip())
+    return dests
+
+
 def check_device_mk():
     """Every file of the device tree's recovery/root must actually be installed.
 
@@ -168,6 +180,7 @@ def check_device_mk():
     twrp.flags silently never reached the ramdisk before this was added.
     """
     text = read("device/xiaomi/sakura/device.mk")
+    blob_dests = manifest_dests()
 
     # Only PRODUCT_PACKAGES lines matter; the rc FILE is legitimately called
     # init.recovery.qcom_decrypt.rc.
@@ -189,7 +202,7 @@ def check_device_mk():
             rel = os.path.relpath(full, root).replace(os.sep, "/")
             if rel == "system/etc/recovery.fstab":
                 continue  # installed by TARGET_RECOVERY_FSTAB, not PRODUCT_COPY_FILES
-            if rel.startswith("system/bin/") or rel.startswith("system/lib64/"):
+            if rel in blob_dests:
                 continue  # installed from the user's firmware by install_blobs.sh
             if rel.endswith("/.gitkeep"):
                 continue
@@ -280,8 +293,81 @@ def check_tooling():
            "vendor_blobs/, blob_install.mk and the installed blob dirs")
 
 
+def check_diagnostics():
+    """The early-boot collector and its GUI patch must be wired end to end."""
+    script = "device/xiaomi/sakura/recovery/root/system/bin/sakura-diag"
+    rc = "device/xiaomi/sakura/recovery/root/init.recovery.sakura_diag.rc"
+
+    path = os.path.join(ROOT, script)
+    record("diag: collector exists and is executable",
+           os.path.isfile(path) and os.access(path, os.X_OK), script)
+    if os.path.isfile(path):
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        record("diag: collector shell syntax clean", proc.returncode == 0,
+               proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "")
+
+    record("diag: init service file exists",
+           os.path.isfile(os.path.join(ROOT, rc)), rc)
+    if os.path.isfile(os.path.join(ROOT, rc)):
+        text = read(rc)
+        record("diag: service declared and started on boot",
+               "service sakura_diag /system/bin/sakura-diag" in text
+               and "start sakura_diag" in text, "")
+
+    qcom = read("device/xiaomi/sakura/recovery/root/init.recovery.qcom.rc")
+    record("diag: device init imports the diagnostic fragment",
+           "import /init.recovery.sakura_diag.rc" in qcom, "")
+
+    dev = read("device/xiaomi/sakura/device.mk")
+    record("diag: collector and rc are in PRODUCT_COPY_FILES",
+           "recovery/root/system/bin/sakura-diag:recovery/root/system/bin/sakura-diag" in dev
+           and "recovery/root/init.recovery.sakura_diag.rc:recovery/root/init.recovery.sakura_diag.rc" in dev,
+           "the pinned trees do not copy recovery/root automatically")
+
+    try:
+        patch = read("patches/0001-theme-sakura-diagnostics.patch")
+    except OSError:
+        patch = ""
+    record("diag: theme patch adds the Error Logs page",
+           'page name="error_logs"' in patch, "patches/0001-theme-sakura-diagnostics.patch")
+    record("diag: theme patch binds the error badge to the collector property",
+           "property.of.boot_diag_errors" in patch, "")
+    record("diag: theme patch only uses existing GUI actions",
+           'function="cmd"' in patch and 'function="page"' in patch
+           and 'function="set"' in patch, "cmd/set/page exist in the pinned GUI")
+
+
+def check_patches():
+    """Patch series, pinned revisions and the applicator must agree."""
+    series = [ln.strip() for ln in read("patches/series").splitlines()
+              if ln.strip() and not ln.strip().startswith("#")]
+    record("patches: series is not empty", bool(series), f"{len(series)} entry(ies)")
+    for entry in series:
+        record(f"patches: {entry} exists",
+               os.path.isfile(os.path.join(ROOT, "patches", entry)), "")
+
+    pins = read("patches/PINNED_REVISIONS")
+    sync = read("build/sync.sh")
+    rec = re.search(r"^bootable_recovery=(\S+)", pins, re.M)
+    record("patches: bootable/recovery pin matches build/sync.sh",
+           bool(rec) and f'RECOVERY_SHA="{rec.group(1)}"' in sync,
+           rec.group(1) if rec else "missing")
+    ven = re.search(r"^vendor_recovery=(\S+)", pins, re.M)
+    record("patches: vendor/recovery pin matches build/sync.sh",
+           bool(ven) and f'VENDOR_SHA="{ven.group(1)}"' in sync,
+           ven.group(1) if ven else "missing")
+
+    apply = os.path.join(ROOT, "build/apply_patches.sh")
+    record("patches: applicator exists and is executable",
+           os.path.isfile(apply) and os.access(apply, os.X_OK), "")
+    record("patches: theme validator exists",
+           os.path.isfile(os.path.join(ROOT, "tools/check_theme.py")), "")
+
+
 def check_docs():
-    for rel in ("documentation/BUILD_FROM_CLEAN_CLONE.md",):
+    for rel in ("documentation/BUILD_FROM_CLEAN_CLONE.md",
+                "documentation/DIAGNOSTICS.md",
+                "documentation/BUG_AUDIT.md"):
         record(f"docs: {rel} exists", os.path.isfile(os.path.join(ROOT, rel)), "")
     try:
         readme = read("README.md")
@@ -355,6 +441,14 @@ def check_workflow():
 
     record("workflow: static checks wired into preflight",
            "tools/static_checks.py" in text, "")
+
+    record("workflow: unit tests wired into preflight",
+           "unittest discover" in text,
+           "the patch/diagnostic logic must be tested on every build")
+
+    record("workflow: tree refresh is not error-suppressed",
+           "--relink-only" in text and "--relink-only \"$SRC\" 2>/dev/null || true" not in text,
+           "a failed relink/patch must stop the build")
 
     record("workflow: decryption gate present with an explicit opt-out input",
            "check_crypto_blobs.sh" in text
@@ -457,6 +551,8 @@ def main(argv):
     check_init_service_paths()
     check_manifest()
     check_tooling()
+    check_diagnostics()
+    check_patches()
     check_crypto_blobs()
     check_docs()
     check_workflow()

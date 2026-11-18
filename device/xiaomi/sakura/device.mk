@@ -32,6 +32,8 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/recovery/root/init.recovery.qcom.rc:recovery/root/init.recovery.qcom.rc \
     $(DEVICE_PATH)/recovery/root/init.recovery.qcom_decrypt.rc:recovery/root/init.recovery.qcom_decrypt.rc \
+    $(DEVICE_PATH)/recovery/root/init.recovery.sakura_diag.rc:recovery/root/init.recovery.sakura_diag.rc \
+    $(DEVICE_PATH)/recovery/root/system/bin/sakura-diag:recovery/root/system/bin/sakura-diag \
     $(DEVICE_PATH)/recovery/root/system/etc/twrp.flags:recovery/root/system/etc/twrp.flags
 
 # ---------------------------------------------------------------------------
@@ -65,10 +67,13 @@ TARGET_RECOVERY_DEVICE_MODULES += \
     vendor.display.config@1.0 \
     vendor.display.config@2.0
 
+# libpcrecpp.so was listed here by the community tree. AOSP removed external/pcre
+# (and with it libpcrecpp) in Android 10; android-12.1 ships libpcre2 only, and
+# the pinned prebuilt/relink.sh silently skips a missing source file. The entry
+# was dead configuration, so it is removed rather than left to mislead.
 RECOVERY_LIBRARY_SOURCE_FILES += \
     $(TARGET_OUT)/lib64/android.hidl.base@1.0.so \
     $(TARGET_OUT_SHARED_LIBRARIES)/libicuuc.so \
-    $(TARGET_OUT_SHARED_LIBRARIES)/libpcrecpp.so \
     $(TARGET_OUT_SHARED_LIBRARIES)/libion.so \
     $(TARGET_OUT_SHARED_LIBRARIES)/libxml2.so \
     $(TARGET_OUT_SHARED_LIBRARIES)/libdrm.so \

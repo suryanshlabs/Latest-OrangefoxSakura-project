@@ -1,0 +1,45 @@
+#
+# init.recovery.sakura_diag.rc - early-boot diagnostic collector (sakura)
+#
+# WHY A SERVICE AND NOT `exec`
+# ----------------------------
+# init's `exec` builtin blocks the trigger until the command exits. A boot
+# logger must never delay the boot sequence, so it is declared as a `oneshot`
+# service:
+# init forks and supervises it asynchronously, and `oneshot` means a completed
+# or crashed run is never restarted in a loop.
+#
+# ORDERING (measured against the pinned etc/init.rc)
+# ------------------------------------------------
+# The device rc is imported at the top of init.rc, so its `on late-init` action
+# is queued BEFORE init.rc's own late-init action. That action is what triggers
+# `boot`, and `on boot` runs `class_start default`, which starts the GUI
+# (`service recovery`, from init.recovery.service22.rc). Starting here therefore
+# guarantees the first snapshot and its `setprop` happen before gui_init(),
+# while /tmp is already mounted by `on init` and logd is running.
+#
+# QSEECom/Keymaster/Gatekeeper start later (`on boot`); the bounded watch loop
+# re-samples `init.svc.*` every few seconds, so their real results are captured
+# without blocking boot.
+#
+# The collector itself is bounded (default 90 s of sampling) and writes only to
+# tmpfs plus an already-writable /cache. See documentation/DIAGNOSTICS.md.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+service sakura_diag /system/bin/sakura-diag boot
+    class core
+    user root
+    group root system
+    seclabel u:r:recovery:s0
+    oneshot
+    disabled
+
+on late-init
+    # PRODUCT_COPY_FILES preserves the executable bit, but init refuses to exec
+    # a non-executable file and the failure is easy to miss in a log. Make the
+    # mode explicit and cheap.
+    chmod 0755 /system/bin/sakura-diag
+    mkdir /tmp/sakura-diag 0750 root system
+    start sakura_diag

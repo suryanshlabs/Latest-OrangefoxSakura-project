@@ -92,6 +92,9 @@ echo; echo "### 5/8 device tree + kernel"
 mkdir -p "$DEST/device/xiaomi/sakura"
 rsync -a --exclude 'prebuilt/Image.gz-dtb' \
       "$ROOT/device/xiaomi/sakura/" "$DEST/device/xiaomi/sakura/"
+# Theme patch (Settings -> Error Logs + status-bar badge). Idempotent and
+# fail-closed on a changed upstream context.
+"$ROOT/build/apply_patches.sh" --src "$DEST"
 K="$DEST/device/xiaomi/sakura/prebuilt/Image.gz-dtb"
 if [ -f "$K" ]; then
     echo "kernel already present:"; sha256sum "$K"

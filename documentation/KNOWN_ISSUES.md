@@ -149,3 +149,28 @@ R11 stock: 46 DTBs; 4.9 candidate: 2 DTBs. Both contain the six sakura camera
 nodes and the sakura panels, so 2 is sufficient in practice — but if a
 sakura variant (different panel/touch) fails to display, the 2-DTB set is the
 first suspect. A from-source build can regenerate all DTBs.
+
+## KI-13 — Boot diagnostics are source-verified, not screen-verified (medium)
+
+`sakura-diag` and the Error Logs theme patch are implemented and unit-tested,
+and the patch applies cleanly to the pinned upstream. **No image has been built
+and no pixel has been rendered.** The badge position (x=756..926, y=8..72) is
+fixed for the 1080 px sakura layout and may need adjustment if the status bar
+variables change. The badge is a text `! DIAG`, not an emoji, because the
+OrangeFox fonts do not guarantee an emoji glyph. Details:
+`DIAGNOSTICS.md` §7.
+
+## KI-14 — Badge refresh is per page render (low)
+
+Theme conditions are evaluated when a page renders. The collector sets
+`of.boot_diag_errors` before the GUI starts, so the first paint is correct. An
+error discovered later appears on the next page load; there is no forced
+redraw. Do not describe the badge as a live indicator.
+
+## KI-15 — `/cache` mirror depends on decryption (medium)
+
+`/cache` is `/data/cache`. On an encrypted, undecrypted device the failed-boot
+logs exist only in `/tmp/sakura-diag` and are lost on reboot. adbd is started
+early (`sys.usb.config=adb`), which is the retrieval path that always works
+while the device is still in recovery. This is a platform constraint, not a
+missing feature; the collector never mounts `/data` to work around it.

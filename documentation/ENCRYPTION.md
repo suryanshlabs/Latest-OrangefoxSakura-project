@@ -85,7 +85,7 @@ Sakura (Redmi 6 Pro) launched on Android 8.1 (API 27), official end state MIUI 1
 
 | Item | Status | Evidence |
 |---|---|---|
-| Source fstab/config consistency (comma tokens, no metadata flags, crypto flags/init wiring) | **PASS (executed)** | `python3 tools/static_checks.py` → **PASS (50 checks)**; WARN `0/20` proprietary blobs. |
+| Source fstab/config consistency (comma tokens, no metadata flags, crypto flags/init wiring) | **PASS (executed)** | `python3 tools/static_checks.py` → **PASS (all checks)**; WARN `0/20` proprietary blobs. |
 | Tooling/unit regression tests | **PASS (executed)** | `python3 -m unittest discover -s tests` → **18 tests, OK** (synthetic fixtures; **not** genuine sakura firmware). |
 | Pinned recovery parsing of fstab/flags | **Verified by source inspection** | `bootable/recovery@8d2aad19` `partition.cpp`: comma separator for `fstab_ver==2`, `encryptable` key location, `fileencryption` → `fbe.contents/filenames`. Runtime unverified. |
 | `ice` meaning in android-12.1 | **Verified by source inspection** | `system/extras/libfscrypt/fscrypt.cpp` (android12-release): `"ice"` → `FSCRYPT_MODE_PRIVATE`. |

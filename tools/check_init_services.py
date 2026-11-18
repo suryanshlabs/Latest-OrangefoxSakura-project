@@ -70,6 +70,11 @@ LIB_DIRS = [
     "system/lib64/hw", "sbin", "system_ext/lib64", "product/lib64",
 ]
 
+# Executables provided by the build (not by the device tree). A shell script's
+# shebang may name one of these before a ramdisk exists; that is not a failure
+# in the pre-build device-tree scan.
+CORE_EXECUTABLES = {"sh", "bash", "toybox"}
+
 # Service names whose absence makes decryption impossible on this device.
 CRYPTO_SERVICE_HINTS = ("qseecomd", "keymaster", "gatekeeper")
 
@@ -159,6 +164,13 @@ class InitScan:
                     if len(parts) < 3:
                         self.add("fail", f"{path}:{lineno}: service without an executable")
                         continue
+                    if any(s["name"] == parts[1] for s in self.services):
+                        # init refuses to load a second definition of the same
+                        # service name; the later one is silently ignored, so
+                        # the declared executable may not be the one that runs.
+                        self.add("fail", f"{path}:{lineno}: duplicate service "
+                                          f"name '{parts[1]}' (already defined "
+                                          f"earlier; init ignores the duplicate)")
                     self.services.append({
                         "name": parts[1], "exec": parts[2], "args": parts[3:],
                         "class": None, "file": path, "line": lineno,
@@ -285,9 +297,28 @@ class InitScan:
             try:
                 binary = elfmod.inspect(full)
             except elfmod.ElfError:
-                if self.verbose:
-                    self.add("warn", f"{where}: {exec_path} is not an ELF (script or "
-                                      f"non-binary); interpreter/library checks skipped")
+                # A shell script is legitimate as an init service. Verify its
+                # shebang interpreter resolves, otherwise init execs a file the
+                # kernel cannot run and the service dies with ENOENT.
+                first = ""
+                try:
+                    with open(full, "rb") as fh:
+                        first = fh.readline(256).decode("utf-8", "replace").strip()
+                except OSError:
+                    pass
+                if first.startswith("#!"):
+                    interp = first[2:].strip().split()[0] if first[2:].strip() else ""
+                    if (interp and not self.exists(interp)
+                            and os.path.basename(interp) not in CORE_EXECUTABLES):
+                        self.add("fail", f"{where}: service {svc['name']} is a "
+                                          f"script whose interpreter {interp} is "
+                                          f"missing from the ramdisk")
+                    elif self.verbose:
+                        self.add("warn", f"{where}: {exec_path} is a script "
+                                          f"(interpreter {interp or '?'})")
+                elif self.verbose:
+                    self.add("warn", f"{where}: {exec_path} is not an ELF and has "
+                                      f"no shebang; init cannot execute it")
                 continue
 
             if not binary.is64:

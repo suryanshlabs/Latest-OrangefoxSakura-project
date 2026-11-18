@@ -85,6 +85,13 @@ jobs:
         shell: bash
         run: python3 tools/static_checks.py
 
+      # The diagnostic collector and the patch applicator are logic, not
+      # configuration: their tests must run before a 45 GB sync, not after a
+      # failed build.
+      - name: Unit tests (diagnostics, patch application, tooling)
+        shell: bash
+        run: python3 -m unittest discover -s tests -v
+
       - name: Measure host capacity (hard gate)
         id: res
         shell: bash
@@ -207,7 +214,10 @@ jobs:
             ./build/sync.sh "$SRC"
           else
             echo "=== reusing existing tree at $SRC ==="
-            ./build/sync.sh --relink-only "$SRC" 2>/dev/null || true
+            # No '|| true': a failed relink now also means the pinned theme
+            # patch was not applied, and a build from that tree would ship
+            # without Settings -> Error Logs.
+            ./build/sync.sh --relink-only "$SRC"
           fi
 
       - name: Install this repository's device tree

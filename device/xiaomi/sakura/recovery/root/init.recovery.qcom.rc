@@ -47,3 +47,8 @@ on init
 # qcom_decrypt module and no such rc file, which is why the import used to
 # fail and no TEE service ever started.
 import /init.recovery.qcom_decrypt.rc
+
+# Early-boot diagnostics. Independent of decryption: it must run (and leave
+# evidence) even when the TEE chain or /data fails, which is exactly the case
+# the GUI cannot report.
+import /init.recovery.sakura_diag.rc

@@ -38,6 +38,12 @@ cd Latest-OrangefoxSakura-project
 ./build/run-all.sh "$HOME/orangefox/fox_12.1"
 ```
 
+The build applies `patches/0001-theme-sakura-diagnostics.patch` through
+`build/apply_patches.sh`. It is pinned to the upstream revision in
+`patches/PINNED_REVISIONS` and fails the build if that context changed.
+Do not edit the theme inside the source tree; regenerate the patch
+(see `patches/README.md`).
+
 `run-all.sh` needs no arguments; the tree location above is its default. It
 stops at the first failure and prints the reason.
 

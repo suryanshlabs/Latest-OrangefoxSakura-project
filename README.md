@@ -26,6 +26,7 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 | Is the DTB sakura's? | Yes — 46 FDTs whose camera/panel nodes are sakura-specific (`sakura_imx486_ofilm`, `ili7807`, `nt36672`) | `REFERENCE_R11_ANALYSIS.md` §5 |
 | Is the community R12 tree usable as-is? | Partly — it is **daisy-derived** (blobs + kernel) and its OrangeFox product makefile was never wired up | `SOURCE_REFERENCES.md` §B1, `DEVICE_COMPATIBILITY.md` §3 |
 | Android 9–17 support? | **Not established as 9–17 decryption support.** Config declares FDE (`encryptable=footer`) + FBE without metadata (`fileencryption=ice`, vendor FSCRYPT_MODE_PRIVATE form); metadata encryption **unsupported**. Inspected sakura trees show FDE-like (LOS 18.1) or `fileencryption=ice` (LOS 20/21/22.x) with no metadata, but A10/A12 formats and all runtime behaviour are **unverified**. **Android 16/17: no sakura ROM/device-tree evidence.** | `ANDROID_COMPATIBILITY.md`, `ENCRYPTION.md` |
+| Boot diagnostics? | **Implemented in source, unit-tested, not device-tested.** `sakura-diag` runs from init before the GUI, writes bounded/rotated logs to `/tmp/sakura-diag` (and mirrors to `/cache/recovery` when writable), and drives Settings → Error Logs plus an `! DIAG` status-bar badge via a pinned theme patch. Conventional `adb pull` works even when the GUI never starts | `DIAGNOSTICS.md` |
 | Decryption? | Source config declares FDE + FBE-without-metadata flags and TEE service wiring; **metadata encryption unsupported**. **0/20** proprietary QTI blobs present, no production image built, no hardware test — **decryption unverified** | `ENCRYPTION.md`, `IMAGE_AUDIT.md` |
 
 ## Repository layout
@@ -43,6 +44,7 @@ device/xiaomi/sakura/     the R12 device tree (the actual port)
   proprietary-files.txt   required QTI crypto blobs + provenance warning
   prebuilt/README.md      kernel provenance and how to supply it
 manifest/                 pinned refs + sync recipe
+patches/                  pinned upstream theme patch + revision pin
 build/                    check_deps, fetch_reference, fetch_kernel, sync,
                           extract_blobs, install_blobs, check_crypto_blobs,
                           build, verify_image, run-all
@@ -69,6 +71,11 @@ command does everything:
 ./build/install_blobs.sh
 ./build/run-all.sh "$HOME/orangefox/fox_12.1"
 ```
+
+`run-all.sh`, `sync.sh` and `build.sh` also apply the pinned theme patch
+(`patches/0001-theme-sakura-diagnostics.patch`) through
+`build/apply_patches.sh`. That step fails the build if the pinned upstream
+context changed, instead of shipping a Settings page that does not exist.
 
 `run-all.sh` runs the host preflight, static checks, the TEE blob gate, the
 pinned sync, the kernel fetch + DTB verification, the single `recoveryimage`

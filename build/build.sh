@@ -60,6 +60,13 @@ else
         "TEE blob gate failed; see documentation/DEPENDENCIES.md section 4"
 fi
 
+# --- pinned upstream patches ------------------------------------------------
+# The Error Logs UI is a theme patch, not a fork. Applying it here (not only in
+# sync.sh) means a reused tree can never build from a half-patched theme, and a
+# changed upstream context stops the build instead of silently dropping the UI.
+"$ROOT/build/apply_patches.sh" --src "$SRC" || die \
+    "theme patch application failed; see patches/README.md"
+
 # --- JDK 11 -----------------------------------------------------------------
 # Soong 12.1 requires JDK 11. Prefer an existing JAVA_HOME, otherwise obtain the
 # portable Temurin build (no root needed) and make it win in PATH. Exported

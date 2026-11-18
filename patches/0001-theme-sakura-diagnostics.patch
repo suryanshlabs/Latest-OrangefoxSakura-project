@@ -1,0 +1,275 @@
+diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
+index 7c64c5a..452f887 100644
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -1266,5 +1266,27 @@
+ 		<string name="listbox_group_dynamic_part">Dynamic partitions</string>
+ 		<string name="listbox_group_additions">Additions</string>
+ 		<string name="partitions_management">Partitions Management</string>
++		<!-- sakura: Error Logs / boot diagnostics -->
++		<string name="diag_hdr">Error Logs</string>
++		<string name="diag_note">Boot diagnostics are collected before the GUI starts. If recovery never reaches this screen, retrieve them with: adb pull /tmp/sakura-diag</string>
++		<string name="diag_view_recovery">View recovery.log</string>
++		<string name="diag_view_boot">View boot/init diagnostics</string>
++		<string name="diag_view_errors">View only errors and warnings</string>
++		<string name="diag_view_dmesg">View kernel log (dmesg)</string>
++		<string name="diag_view_logcat">View logcat</string>
++		<string name="diag_view_services">View service status</string>
++		<string name="diag_view_encryption">View mounts and encryption status</string>
++		<string name="diag_generate_report">Generate diagnostic report</string>
++		<string name="diag_report_hdr">Diagnostic report</string>
++		<string name="diag_report_body">A redacted report was written to /tmp/sakura-diag/report.txt. It is also copied to /cache/recovery/sakura-diag/ when /cache is writable. Wait a moment, then open it below.</string>
++		<string name="diag_view_report">View report</string>
++		<string name="diag_export">Copy / export diagnostic logs</string>
++		<string name="diag_export_hdr">Diagnostics exported</string>
++		<string name="diag_export_body">Logs stay in /tmp/sakura-diag. They are also copied to /cache/recovery/sakura-diag/ when /cache is writable, and to /sdcard/Fox/diag/ when internal storage is already mounted. Retrieve with: adb pull /cache/recovery/sakura-diag</string>
++		<string name="diag_clear">Clear diagnostic logs</string>
++		<string name="diag_clear_hdr">Clear diagnostic logs?</string>
++		<string name="diag_clear_body">This deletes the collected boot diagnostics, kernel log, logcat and reports. It does not touch /data, /cache or any other partition. The recovery log itself is not deleted.</string>
++		<string name="diag_clear_yes">Yes, clear diagnostic logs</string>
++		<string name="diag_clear_no">No, keep them</string>
+ 	</resources>
+ </language>
+diff --git a/gui/theme/portrait_hdpi/pages/diag.xml b/gui/theme/portrait_hdpi/pages/diag.xml
+new file mode 100644
+index 0000000..ba3b9f3
+--- /dev/null
++++ b/gui/theme/portrait_hdpi/pages/diag.xml
+@@ -0,0 +1,180 @@
++<?xml version="1.0"?>
++<recovery>
++	<pages>
++		<!--
++			sakura: Error Logs / boot diagnostics.
++
++			Pure theme XML on purpose. Every action used here already exists in
++			the pinned bootable/recovery at 8d2aad19:
++			  * `cmd`    runs a shell command in a worker thread (gui/action.cpp),
++			  * `set`    sets a persistent GUI variable,
++			  * `page`   switches pages,
++			  * `cat_file` (files.xml) renders a file in a scrollable textbox
++			    via of_file_to_read; it refuses files larger than 1.5 MiB and
++			    sakura-diag caps every log at 256 KiB.
++			No C++ modification is required, so this is shipped as a theme patch
++			(patches/0001-theme-sakura-diagnostics.patch) rather than a fork.
++		-->
++		<page name="error_logs">
++			<listbox style="group_list">
++				<placement x="0" y="%ab_h%" w="%screen_w%" h="%bl_fullscreen_h%"/>
++				<iconsize w="216" h="168" padding="24"/>
++
++				<listitem name="{@diag_view_recovery}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/recovery.log</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_boot}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/boot-diag.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_errors}">
++					<icon res="icon_warning"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/errors.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_dmesg}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/dmesg.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_logcat}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/logcat.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_services}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/services.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++				<listitem name="{@diag_view_encryption}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/encryption.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++
++				<listitem name="{@diag_generate_report}">
++					<icon res="bs_btn_set_custom"/>
++					<action function="cmd">/system/bin/sakura-diag report</action>
++					<action function="page">error_logs_report</action>
++				</listitem>
++				<listitem name="{@diag_export}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag export</action>
++					<action function="page">error_logs_exported</action>
++				</listitem>
++				<listitem name="{@diag_clear}">
++					<icon res="icon_warning"/>
++					<action function="page">error_logs_clear</action>
++				</listitem>
++			</listbox>
++
++			<template name="base"/>
++
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>{@diag_hdr}</text>
++			</text>
++
++			<text style="caption">
++				<placement x="%col1_x_indent%" y="%row1_2_y%" w="%console_width%"/>
++				<text>{@diag_note}</text>
++			</text>
++
++			<template name="gestures"/>
++
++			<action>
++				<touch key="home"/>
++				<action function="page">main</action>
++			</action>
++			<action>
++				<touch key="back"/>
++				<action function="page">settings</action>
++			</action>
++		</page>
++
++		<page name="error_logs_report">
++			<template name="base"/>
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>{@diag_report_hdr}</text>
++			</text>
++			<text style="text_body1">
++				<placement x="%col1_x_indent%" y="%row1_2_y%" w="%console_width%"/>
++				<text>{@diag_report_body}</text>
++			</text>
++			<listbox style="group_list">
++				<placement x="0" y="%row3_1_y%" w="%screen_w%" h="%bl_files_h%"/>
++				<iconsize w="216" h="168" padding="24"/>
++				<listitem name="{@diag_view_report}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/report.txt</action>
++					<action function="page">cat_file</action>
++				</listitem>
++			</listbox>
++			<template name="gestures"/>
++			<action>
++				<touch key="back"/>
++				<action function="page">error_logs</action>
++			</action>
++			<action>
++				<touch key="home"/>
++				<action function="page">main</action>
++			</action>
++		</page>
++
++		<page name="error_logs_exported">
++			<template name="base"/>
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>{@diag_export_hdr}</text>
++			</text>
++			<text style="text_body1">
++				<placement x="%col1_x_indent%" y="%row1_2_y%" w="%console_width%"/>
++				<text>{@diag_export_body}</text>
++			</text>
++			<template name="gestures"/>
++			<action>
++				<touch key="back"/>
++				<action function="page">error_logs</action>
++			</action>
++			<action>
++				<touch key="home"/>
++				<action function="page">main</action>
++			</action>
++		</page>
++
++		<page name="error_logs_clear">
++			<template name="base"/>
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>{@diag_clear_hdr}</text>
++			</text>
++			<text style="text_body1">
++				<placement x="%col1_x_indent%" y="%row1_2_y%" w="%console_width%"/>
++				<text>{@diag_clear_body}</text>
++			</text>
++			<listbox style="group_list">
++				<placement x="0" y="%row3_1_y%" w="%screen_w%" h="%bl_files_h%"/>
++				<iconsize w="216" h="168" padding="24"/>
++				<listitem name="{@diag_clear_yes}">
++					<icon res="icon_warning"/>
++					<action function="cmd">/system/bin/sakura-diag clear --yes</action>
++					<action function="page">error_logs</action>
++				</listitem>
++				<listitem name="{@diag_clear_no}">
++					<icon res="bs_btn_set_about"/>
++					<action function="page">error_logs</action>
++				</listitem>
++			</listbox>
++			<template name="gestures"/>
++			<action>
++				<touch key="back"/>
++				<action function="page">error_logs</action>
++			</action>
++		</page>
++	</pages>
++</recovery>
+diff --git a/gui/theme/portrait_hdpi/pages/settings.xml b/gui/theme/portrait_hdpi/pages/settings.xml
+index db82784..53b68fb 100644
+--- a/gui/theme/portrait_hdpi/pages/settings.xml
++++ b/gui/theme/portrait_hdpi/pages/settings.xml
+@@ -64,6 +64,10 @@
+ 					<icon res="bs_btn_set_regional"/>
+ 					<action function="page">ext_time</action>
+ 				</listitem>
++				<listitem name="{@diag_hdr}">
++					<icon res="icon_warning"/>
++					<action function="page">error_logs</action>
++				</listitem>
+ 				<listitem name="{@about_hdr}">
+ 					<icon res="bs_btn_set_about"/>
+ 					<action function="page">about</action>
+diff --git a/gui/theme/portrait_hdpi/pages/templates/statusbar.xml b/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
+index 4cb1f75..349b4c2 100644
+--- a/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
++++ b/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
+@@ -2,6 +2,25 @@
+ <recovery>
+ 	<templates>
+ 		<template name="statusbarinfo">
++			<!--
++				sakura: boot diagnostic badge. Hidden unless the early-boot
++				collector counted a real error (property.of_* is resolved through
++				DataManager::GetValue, which supports the `property.` prefix).
++				Tapping it opens Settings -> Error Logs. Optional HALs are excluded
++				from the count by sakura-diag, so their absence never lights it.
++			-->
++			<text style="text_status">
++				<condition var1="property.of.boot_diag_errors" op="!=" var2="0"/>
++				<condition var1="property.of.boot_diag_errors" op="!=" var2=""/>
++				<placement x="756" y="%status_info_y%"/>
++				<text>! DIAG</text>
++			</text>
++			<action>
++				<condition var1="property.of.boot_diag_errors" op="!=" var2="0"/>
++				<touch x="746" y="8" w="170" h="64"/>
++				<action function="page">error_logs</action>
++			</action>
++
+ 			<!-- Time, etc. -->
+ 			<text style="text_status">
+ 				<condition var1="show_cpu_temp" var2="0"/>
+diff --git a/gui/theme/portrait_hdpi/ui.xml b/gui/theme/portrait_hdpi/ui.xml
+index 99eed88..2675ae2 100644
+--- a/gui/theme/portrait_hdpi/ui.xml
++++ b/gui/theme/portrait_hdpi/ui.xml
+@@ -35,6 +35,7 @@
+ 		<xml name="/twres/pages/advanced.xml"/>
+ 		<xml name="/twres/pages/reboot.xml"/>
+ 		<xml name="/twres/pages/settings.xml"/>
++		<xml name="/twres/pages/diag.xml"/>
+ 		<xml name="/twres/pages/universal.xml"/>
+ 		<xml name="/twres/pages/anywhere.xml"/>
+ 		<xml name="/twres/pages/dialogs.xml"/>

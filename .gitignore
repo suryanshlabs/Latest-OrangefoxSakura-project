@@ -28,8 +28,13 @@ handoff/
 # ---------------------------------------------------------------------------
 vendor_blobs/
 device/xiaomi/sakura/blob_install.mk
-# Only the blob directories inside recovery/root are ignored - the tracked
+# Only the blob contents of recovery/root are ignored - the tracked
 # recovery.fstab, twrp.flags and init fragments live in system/etc and the
-# ramdisk root and must stay versioned.
-device/xiaomi/sakura/recovery/root/system/bin/
-device/xiaomi/sakura/recovery/root/system/lib64/
+# ramdisk root and must stay versioned. The pattern ignores the *contents* of
+# these directories rather than the directories themselves, so a re-inclusion
+# can work: git cannot descend into an excluded directory.
+device/xiaomi/sakura/recovery/root/system/bin/*
+device/xiaomi/sakura/recovery/root/system/lib64/*
+# sakura-diag is this project's own source, not a vendor blob. Without it a
+# build from a clean clone silently has no early-boot diagnostics.
+!device/xiaomi/sakura/recovery/root/system/bin/sakura-diag

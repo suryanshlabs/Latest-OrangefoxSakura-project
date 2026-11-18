@@ -95,6 +95,16 @@ else
     fi
 fi
 
+# ---- 5. pinned upstream patches -------------------------------------------
+# Applied here so every entry point (sync, run-all, build.sh, a reused CI
+# tree) ends in the same themed tree. The applicator fails if the pinned
+# upstream context changed; it is idempotent on re-runs.
+if git -C "$DEST/bootable/recovery" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    "$ROOT/build/apply_patches.sh" --src "$DEST"
+else
+    echo "WARNING: $DEST/bootable/recovery is missing; theme patches were not applied."
+fi
+
 [ "$RELINK_ONLY" = 0 ] && rm -rf "$SYNC_DIR"
 
 cat <<EOF

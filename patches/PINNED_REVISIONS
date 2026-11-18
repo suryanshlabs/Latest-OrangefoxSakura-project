@@ -1,0 +1,5 @@
+# Upstream revisions the theme patch was generated against and is verified on.
+# build/apply_patches.sh refuses to apply when the checkout differs, because a
+# different tree can have different theme context even on the same branch.
+bootable_recovery=8d2aad19deb158e935d70ca5b648162c2b2831ee
+vendor_recovery=1998cfcaca9bb247ea20d587e565676faa281de9

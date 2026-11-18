@@ -69,7 +69,7 @@ Status vocabulary used: **Research only · Source verified · Build verified · 
 
 ## 7. Checks executed (this audit session)
 
-- `python3 tools/static_checks.py` → **PASS (50 checks)**, expected WARN `0/20` blobs.
+- `python3 tools/static_checks.py` → **PASS (all checks)**, expected WARN `0/20` blobs.
 - `python3 -m unittest discover -s tests` → **Ran 18 tests, OK** (synthetic fixtures; **not** real sakura firmware tests).
 - No production image built; no hardware boot/feature/decryption tests.
 

@@ -30,9 +30,9 @@ the device configuration and **"Research only"** for runtime behaviour.
 Run on the committed tree; re-runnable anywhere with `python3` and `bash`. The checks below were **re-executed on the current tree in this audit session** (HEAD `1fb8154…` lineage, before this compatibility-research commit) with the results shown; re-run after doc-only commits to confirm. Synthetic test fixtures are **not** genuine sakura firmware.
 
 ```bash
-python3 tools/static_checks.py   # PASS (50 checks), expected WARN: 0/20 proprietary blobs present
-bash -n build/*.sh               # PASS (11 scripts)
-python3 -m unittest discover -s tests -v   # PASS (18 tests, synthetic fixtures)
+python3 tools/static_checks.py   # PASS (69 checks), expected WARN: 0/20 proprietary blobs present
+bash -n build/*.sh               # PASS (12 scripts)
+python3 -m unittest discover -s tests -v   # PASS (38 tests, synthetic fixtures)
 ```
 
 | Check | Result |
@@ -73,6 +73,31 @@ python3 -m unittest discover -s tests -v      # 18 tests
 The firmware used for the end-to-end tests is **synthetic** (ELF/`build.prop`
 fixtures built by `tests/support.py`), because no genuine sakura ROM is
 available here. That proves the workflow's logic, not sakura's actual blobs.
+
+## 1d. Diagnostic logging + theme patch (this round)
+
+All commands below were **executed in this session**; results are the observed
+ones, not expectations.
+
+| Check | Command | Result |
+|---|---|---|
+| Static gate (incl. new diagnostic/patch checks) | `python3 tools/static_checks.py` | **PASS (69 checks)**; WARN `0/20` blobs |
+| Full unit suite | `python3 -m unittest discover -s tests -v` | **PASS (38 tests)** |
+| Collector shell syntax | `bash -n .../system/bin/sakura-diag` | **PASS** |
+| Collector logic | `tests/test_diag.py` (13 tests, synthetic fixtures) | **PASS** — counting, optional-service exclusion, rotation bounds, redaction, report sections, missing storage, clear confirmation, export fallback, bounded boot |
+| Patch check on clean pinned upstream | `git clone -b fox_12.1 ... && build/apply_patches.sh --src … --check` | **PASS** — would apply to `8d2aad19…` |
+| Patch apply + idempotency | `build/apply_patches.sh --src …` twice | **PASS** — applied once, second run "already applied" |
+| Patched theme structure | `tools/check_theme.py --theme … --strings … --strict-targets` | **PASS** — 26 files, 203 pages, 620 page transitions, 0 errors |
+| Patch failure handling | `tests/test_patches.py` (7 tests) | **PASS** — changed context refused, revision mismatch refused, `--check` writes nothing |
+| Workflow YAML | static check | **PASS** |
+
+What this **does not** prove: that the badge or the Error Logs page renders,
+that `setprop`/`getprop` behave on the device, or that `/cache` is writable on
+an encrypted, undecrypted device. Those need hardware; every generation's
+`TEST_RECORD.md` keeps the diagnostics rows **not tested**.
+
+The patch was verified against the **real** pinned upstream, but the GUI itself
+has never been built into an image here.
 
 ## 2. What was NOT executed
 

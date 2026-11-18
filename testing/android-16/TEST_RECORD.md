@@ -33,6 +33,7 @@
 | Internal storage mounts | not tested |  |
 | External storage (microSD) | not tested |  |
 | Partitions detected correctly | not tested |  |
+| **Diagnostics** (badge, Error Logs viewers, report/export) | not tested | requires a booted image; logic is covered by tests/test_diag.py |
 | **Decryption** | not tested | requires genuine sakura blobs (0/20 present), built/verified image, matching on-disk format, and device evidence |
 | Backup | not tested |  |
 | Restore | not tested |  |
