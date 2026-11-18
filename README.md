@@ -25,7 +25,7 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 | Which manifest? | **`fox_12.1`** — it *is* R12.0; `fox_14.1` is unnecessary for this device | `SOURCE_AUDIT.md` §2 |
 | Is the DTB sakura's? | Yes — 46 FDTs whose camera/panel nodes are sakura-specific (`sakura_imx486_ofilm`, `ili7807`, `nt36672`) | `REFERENCE_R11_ANALYSIS.md` §5 |
 | Is the community R12 tree usable as-is? | Partly — it is **daisy-derived** (blobs + kernel) and its OrangeFox product makefile was never wired up | `SOURCE_REFERENCES.md` §B1, `DEVICE_COMPATIBILITY.md` §3 |
-| Android 9–17 support? | 9 FDE and 10+ FBE-without-metadata are **intended targets** in config; metadata encryption **unsupported**; 10–15 **unverified** (no blobs/build/hardware test); **16/17 no sakura ROM evidence** | `ANDROID_COMPATIBILITY.md`, `ENCRYPTION.md` |
+| Android 9–17 support? | **Not established as 9–17 decryption support.** Config declares FDE (`encryptable=footer`) + FBE without metadata (`fileencryption=ice`, vendor FSCRYPT_MODE_PRIVATE form); metadata encryption **unsupported**. Inspected sakura trees show FDE-like (LOS 18.1) or `fileencryption=ice` (LOS 20/21/22.x) with no metadata, but A10/A12 formats and all runtime behaviour are **unverified**. **Android 16/17: no sakura ROM/device-tree evidence.** | `ANDROID_COMPATIBILITY.md`, `ENCRYPTION.md` |
 | Decryption? | Source config declares FDE + FBE-without-metadata flags and TEE service wiring; **metadata encryption unsupported**. **0/20** proprietary QTI blobs present, no production image built, no hardware test — **decryption unverified** | `ENCRYPTION.md`, `IMAGE_AUDIT.md` |
 
 ## Repository layout

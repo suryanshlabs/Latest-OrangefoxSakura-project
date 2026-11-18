@@ -27,7 +27,7 @@ the device configuration and **"Research only"** for runtime behaviour.
 
 ## 1b. Static checks executed for the current tree (no build)
 
-Run on the committed tree; re-runnable anywhere with `python3` and `bash`. The checks below (except the historical blob-availability note) were **re-executed on the current tree in this audit session** with the results shown:
+Run on the committed tree; re-runnable anywhere with `python3` and `bash`. The checks below were **re-executed on the current tree in this audit session** (HEAD `1fb8154…` lineage, before this compatibility-research commit) with the results shown; re-run after doc-only commits to confirm. Synthetic test fixtures are **not** genuine sakura firmware.
 
 ```bash
 python3 tools/static_checks.py   # PASS (50 checks), expected WARN: 0/20 proprietary blobs present
