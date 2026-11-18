@@ -81,14 +81,18 @@ ones, not expectations.
 
 | Check | Command | Result |
 |---|---|---|
-| Static gate (incl. new diagnostic/patch checks) | `python3 tools/static_checks.py` | **PASS (69 checks)**; WARN `0/20` blobs |
-| Full unit suite | `python3 -m unittest discover -s tests -v` | **PASS (38 tests)** |
-| Collector shell syntax | `bash -n .../system/bin/sakura-diag` | **PASS** |
-| Collector logic | `tests/test_diag.py` (13 tests, synthetic fixtures) | **PASS** — counting, optional-service exclusion, rotation bounds, redaction, report sections, missing storage, clear confirmation, export fallback, bounded boot |
+| Static gate (incl. crypto-mode, metadata, diagnostics, docs and theme gates) | `python3 tools/static_checks.py` | **PASS (97 checks)**; WARN `0/20` blobs |
+| Full unit suite | `python3 -m unittest discover -s tests -v` | **PASS (74 tests)** |
+| Collector shell syntax | `sh -n .../system/bin/sakura-diag` | **PASS** (POSIX `sh`, not bash) |
+| Collector logic | `tests/test_diag.py` (28 tests, synthetic fixtures) | **PASS** — bracket-format getprop, credential/serial/IMEI/MAC redaction, props allow-list, viewer/export privacy, five `/cache` mount states, fresh-process report counters, boot-stage persistence, TEE grace, crypto `none` mode, triage vs fatal, rotation bounds, missing storage, clear/copy semantics, bounded boot |
 | Patch check on clean pinned upstream | `git clone -b fox_12.1 ... && build/apply_patches.sh --src … --check` | **PASS** — would apply to `8d2aad19…` |
 | Patch apply + idempotency | `build/apply_patches.sh --src …` twice | **PASS** — applied once, second run "already applied" |
-| Patched theme structure | `tools/check_theme.py --theme … --strings … --strict-targets` | **PASS** — 26 files, 203 pages, 620 page transitions, 0 errors |
-| Patch failure handling | `tests/test_patches.py` (7 tests) | **PASS** — changed context refused, revision mismatch refused, `--check` writes nothing |
+| Patched theme structure | `tools/check_theme.py --theme … --strings … --strict-targets` | **PASS** — 26 files, 205 pages, 632 page transitions, 0 errors (1 upstream warning: duplicate `main`) |
+| Patch failure handling | `tests/test_patches.py` (7 tests) | **PASS** — changed context refused, revision mismatch refused, `--check` writes nothing, page count no longer pinned to an exact number |
+| Metadata opt-in tooling | `tests/test_metadata.py` (10 tests) | **PASS** — confirmation required, idempotent enable, byte-exact disable, half-applied tree fails `--check`, generated fragments gitignored, build/verify/workflow wiring |
+| Metadata tool on the real tree | `python3 tools/configure_metadata.py --check` | **PASS** — `disabled` (as committed) |
+| Theme-selection preflight | `tests/test_theme_inputs.py` (11 tests) | **PASS** — missing theme dir, missing include, missing vendor/twrp, namespace without `TW_THEME`, no theme+no resolution, wrong `orangefox_soong.mk` order, complete tree |
+| Theme-selection inputs of the real tree | `build/check_theme_inputs.sh <src>` | not run — no synced 45 GB tree here; the device-tree half is covered by the tests above |
 | Workflow YAML | static check | **PASS** |
 
 What this **does not** prove: that the badge or the Error Logs page renders,

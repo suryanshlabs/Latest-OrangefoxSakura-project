@@ -56,6 +56,8 @@ echo "#   repository : $ROOT"
 echo "#   source     : $DEST"
 echo "#   mode       : $([ "${SAKURA_ALLOW_MISSING_CRYPTO:-0}" = 1 ] \
         && echo 'NO-DECRYPTION (SAKURA_ALLOW_MISSING_CRYPTO=1)' || echo 'full (decryption gate enforced)')"
+echo "#   metadata   : $([ "${SAKURA_METADATA_ENCRYPTION:-0}" = 1 ] \
+        && echo 'ENABLED (opt-in FBEv2; verify the ROM uses it)' || echo 'disabled (default)')"
 echo "############################################################"
 
 echo; echo "### 1/8 host preflight"

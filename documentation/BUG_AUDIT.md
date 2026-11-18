@@ -103,8 +103,143 @@ errors — a red `! DIAG` on a perfectly working recovery, i.e. exactly the
 "false error" the brief forbids. **Fix:** the first classification records such
 services as `pending; first pass` and only the second and later passes count
 them; `failed`/`crashed`/`restarting` is still always an error.
-**Check:** `tests/test_diag.py::test_preboot_pending_service_is_not_an_error`
-and `::test_later_pass_reports_missing_service`.
+**Check:** `tests/test_diag.py::TestClassification::test_severity_split` (a required TEE
+service that is already `failed` is still an error) and
+`::test_optional_service_is_not_an_error`.
+
+
+### BUG-10 — kernel warnings were counted but never written (HIGH, found by test)
+
+`append_matches()` built its prefix with `sed "s/^/[$prefix] /"`. The prefix for
+kernel security lines is `selinux/warn`, and the `/` **ends the `s///` command**,
+so sed failed, printed nothing, and `2>/dev/null` hid it. The counters still
+included those lines, so `warnings: 3` could appear with a `warnings.txt` holding
+one entry — a report that contradicts itself and a GUI filter that shows nothing
+for an AVC denial.
+**Fix:** use `|` as the sed delimiter. **Check:**
+`tests/test_diag.py::TestClassification::test_severity_split` asserts the AVC and
+mmc lines are present in `warnings.txt`, not just counted.
+
+### BUG-11 — real getprop output leaked serials and mangles credential lines (HIGH, privacy)
+
+Two defects in one function:
+
+* The parser only understood `key=value`. Android's real output is
+  `[ro.boot.serialno]: [ABC123]`, so **no** serial, IMEI or MAC in a bracket line
+  was ever redacted — they went straight into `dmesg.txt`, `logcat.txt`,
+  `recovery-log.txt`, the report and every export.
+* The name-based replacement used `\1\2`, but the sensitive-name expression is an
+  inner capture group, so the key was written twice
+  (`passwordpassword<redacted>`) and the line no longer matched the documented
+  shape.
+
+**Fix:** the redactor accepts `[key]: [value]` in addition to `key=value`, uses
+`\1\3<redacted>` for the three-group expression, and additionally redacts the
+device's own serial/IMEI **by value** (read from `ro.serialno`,
+`ro.boot.serialno`, `ro.imei`, `ro.meid`) so a bare occurrence with no key name
+is still removed. **Check:** `TestPrivacy` (bracket syntax, IMEI/serial, MAC),
+`test_report_redacts_credentials_and_identifiers`,
+`test_exported_copies_contain_no_secrets`.
+
+### BUG-12 — `props.txt` was copied raw into every shareable bundle (HIGH, privacy)
+
+The export step copied `*.txt`, including a property dump. Even with redaction,
+the safest property is the one that was never written: `props.txt` is now built
+from an allow-list of prefixes **and** a block-list of sensitive names, and
+exported copies are re-redacted on the way out. A raw secret therefore cannot
+reach `/cache`, `/sdcard`, a GUI viewer or a report bundle.
+**Check:** `test_props_file_never_contains_sensitive_values`,
+`test_exported_copies_contain_no_secrets`.
+
+### BUG-13 — `/cache` handling was guesswork, and the docs contradicted the fstab (MEDIUM)
+
+`cache_writable()` created the directory and ran a write test without proving
+that `/cache` was a mount point, so a directory in the ramdisk could be treated
+as a persistent copy. The docs simultaneously claimed `/cache` was `/data/cache`,
+while `recovery.fstab` maps a **separate** `by-name/cache` ext4 partition.
+Worse, a path that resolved only to `/` (i.e. `/cache` not mounted at all) was
+reported as `not-persistent` instead of `unmounted`.
+**Fix:** `mount_lookup()` resolves the longest containing mount point from
+`/proc/mounts` (decoding `\040`) and `cache_state()` returns
+`unmounted|not-persistent|read-only|unwritable|rw|disabled`; nothing is created
+unless the state is `rw` on a real filesystem. Every `/data/cache` claim was
+removed and `tools/static_checks.py` fails if it comes back.
+**Check:** the four `/cache` tests in `TestCachePersistence`, plus the docs gate.
+
+### BUG-14 — a no-decryption build reported its own TEE services as failures (MEDIUM)
+
+`SAKURA_ALLOW_MISSING_CRYPTO=1` builds intentionally ship no qseecomd/Keymaster.
+The collector's hardcoded required-service list still flagged them, so an
+intentional build produced a permanent red badge.
+**Fix:** the build writes `ro.sakura.crypto.mode=full|none`; in `none` mode those
+services are listed in `triage.txt` as `(not required: crypto mode none)` and
+never counted. Full mode is unchanged and still fails loudly; the production
+blob gate (`check_crypto_blobs.sh --require`) is untouched.
+**Check:** `test_crypto_disabled_build_does_not_report_tee_failures`,
+and `test_severity_split` for full mode.
+
+### BUG-15 — the mounts entry opened `encryption.txt`, with no mounts viewer (MEDIUM, GUI)
+
+Part 3 requires a real mount-status viewer, and the old patch's only mount-ish
+entry displayed `encryption.txt`. There was no `mounts.txt` page at all.
+**Fix:** the regenerated patch adds `mounts.txt` and `crypto-errors.txt` viewers,
+an unclassified (`triage.txt`) view, a copy page with 11 targets, a clear
+confirmation page and a `diag_view` page that returns to Error Logs.
+**Check:** `test_patches.py` (pages, actions, back targets, `fileexists` gate) and
+`static_checks.py` (feature matrix).
+
+### BUG-16 — a metadata typo and a misleading "unsupportable" comment (MEDIUM)
+
+`BoardConfig.mk` documented the metadata decision as `DI[disabled]` (truncated
+text) and stated flatly that metadata decryption was unsupportable, while the
+pinned tree compiles `-DTW_INCLUDE_FBE_METADATA_DECRYPT` and parses
+`metadata_encryption=`/`keydirectory=` whenever crypto is on. The real problem is
+narrower and more dangerous than "unsupported": a non-empty key directory makes
+`Setup_Data_Partition()` believe `/data` is encrypted. That is now documented as
+the reason for the default, and `tools/configure_metadata.py` makes enabling it
+explicit (`--confirm-rom-uses-metadata`), reversible (byte-exact `--disable`) and
+validated (`--check` fails on half-applied trees).
+**Check:** `tests/test_metadata.py` (10 tests).
+
+
+### BUG-17 — the theme could not be selected, killing the build inside Soong (HIGH, observed in CI)
+
+Four CI runs (`43724180838`, `43724709164`, `43726944108`, `43727215787`,
+`43727418831`) stopped at the first Soong invocation with
+
+```
+Could not find ui.xml for TW_THEME: not set
+(theme selection failed; exiting)
+```
+
+`gui/libguitwrp_defaults.go` reads `TW_THEME` **only** through Soong's vendor
+config namespace `twrpVarsPlugin`, which `vendor/twrp/config/BoardConfigSoong.mk`
+fills from `EXPORT_TO_SOONG`. When the device `BoardConfig.mk` does not include
+that file — or when an include lands where it cannot take effect — make still sees
+`TW_THEME` but Soong sees `""`, the plugin calls `os.Exit(-1)`, and the build dies
+before compiling anything. The message names none of the four possible causes, so
+each CI run cost minutes to diagnose and the retries changed nothing.
+
+**Fix:** two layers.
+
+1. `BoardConfig.mk` now declares `TARGET_SCREEN_WIDTH := 1080` /
+   `TARGET_SCREEN_HEIGHT := 2280` (the panel resolution already documented in
+   `DEVICE_COMPATIBILITY.md` and `vendorsetup.sh`). `determineTheme()` derives
+   `portrait_hdpi` from the resolution when `TW_THEME` is empty, so an export
+   regression degrades to a working theme instead of a dead build.
+2. `build/check_theme_inputs.sh` — run by `build/build.sh` *before* envsetup —
+   checks the whole chain in seconds: `TW_THEME`/resolution in the device tree,
+   `gui/theme/<theme>/ui.xml` in the pinned recovery, the `twrpVarsPlugin`
+   namespace and `TW_THEME` in `EXPORT_TO_SOONG`, the include in `BoardConfig.mk`,
+   and the OrangeFox `orangefox_soong.mk` ordering (it must precede the export
+   loop or `OF_LANDSCAPE_MODE` is silently dropped).
+
+**Check:** `tests/test_theme_inputs.py` (11 tests, one per failure mode).
+
+**Not established:** whether the include was already present-but-ineffective in
+those runs. The preflight proves the inputs; only a completed build proves that
+`soong.variables` carries them. That is recorded as OPEN-8 rather than claimed as
+fixed.
 
 ## Reviewed and deliberately unchanged
 
@@ -125,10 +260,11 @@ and `::test_later_pass_reports_missing_service`.
 | OPEN-1 | HIGH | Decryption is unverified for Android 9–15 | 0/20 genuine sakura vendor blobs, no production build, no device |
 | OPEN-2 | HIGH | No build has been performed | needs a ≥45 GB fox_12.1 host; see `BUILD_FROM_CLEAN_CLONE.md` |
 | OPEN-3 | MEDIUM | GUI badge/viewer never rendered on hardware | needs a device; the XML is validated, the pixels are not |
-| OPEN-4 | MEDIUM | `/cache` persistence depends on `/data` being decrypted/mounted | architectural (cache lives in `/data/cache`); tmpfs + ADB is the guaranteed path |
+| OPEN-4 | MEDIUM | Persistent `/cache` mirror needs the cache partition mounted | `/cache` is its own ext4 partition; if it is absent or read-only the mirror is skipped by design. tmpfs + ADB is the guaranteed path |
 | OPEN-5 | MEDIUM | Badge does not force a redraw when an error appears after first paint | theme conditions are evaluated per render; documented, not hidden |
-| OPEN-6 | MEDIUM | Metadata encryption unsupported | no `dm-default-key`, KM 3.0 vendor (`ENCRYPTION.md` §5) |
+| OPEN-6 | MEDIUM | Metadata decryption is configured but not usable | userspace path compiled + opt-in wiring shipped; neither kernel has `dm-default-key` and the vendor is KM 3.0 (`ENCRYPTION.md` §6a) |
 | OPEN-7 | LOW | Kernel provenance is not attributable | `KNOWN_ISSUES.md` KI-2 |
+| OPEN-8 | HIGH | No build has ever completed: theme selection died inside Soong in all five CI runs | root cause narrowed and preflighted (`BUG-17`), not proven fixed without a completed build |
 
 ## Verification commands used for this audit
 

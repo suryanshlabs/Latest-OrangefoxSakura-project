@@ -22,8 +22,16 @@
 # re-samples `init.svc.*` every few seconds, so their real results are captured
 # without blocking boot.
 #
+# BADGE DEFAULTS
+# --------------
+# The status-bar badge reads property.of.boot_diag_errors and is hidden when it
+# equals 0. `setprop` here is an init builtin, so the value is defined before the
+# collector (or the GUI) can read it: an unset property would otherwise compare
+# as an empty string and could show a false badge on a healthy boot. The
+# collector overwrites these with real counters.
+#
 # The collector itself is bounded (default 90 s of sampling) and writes only to
-# tmpfs plus an already-writable /cache. See documentation/DIAGNOSTICS.md.
+# tmpfs plus an already-mounted, writable /cache. See documentation/DIAGNOSTICS.md.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
@@ -42,4 +50,9 @@ on late-init
     # mode explicit and cheap.
     chmod 0755 /system/bin/sakura-diag
     mkdir /tmp/sakura-diag 0750 root system
+    setprop of.boot_diag_errors 0
+    setprop of.boot_diag_warnings 0
+    setprop of.boot_diag_triage 0
+    setprop of.boot_diag_state idle
+    setprop of.boot_diag_stage early-boot
     start sakura_diag

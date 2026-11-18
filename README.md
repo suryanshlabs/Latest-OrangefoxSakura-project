@@ -25,9 +25,9 @@ A device-specific port of **OrangeFox Recovery R12.0** to the Xiaomi Redmi 6 Pro
 | Which manifest? | **`fox_12.1`** — it *is* R12.0; `fox_14.1` is unnecessary for this device | `SOURCE_AUDIT.md` §2 |
 | Is the DTB sakura's? | Yes — 46 FDTs whose camera/panel nodes are sakura-specific (`sakura_imx486_ofilm`, `ili7807`, `nt36672`) | `REFERENCE_R11_ANALYSIS.md` §5 |
 | Is the community R12 tree usable as-is? | Partly — it is **daisy-derived** (blobs + kernel) and its OrangeFox product makefile was never wired up | `SOURCE_REFERENCES.md` §B1, `DEVICE_COMPATIBILITY.md` §3 |
-| Android 9–17 support? | **Not established as 9–17 decryption support.** Config declares FDE (`encryptable=footer`) + FBE without metadata (`fileencryption=ice`, vendor FSCRYPT_MODE_PRIVATE form); metadata encryption **unsupported**. Inspected sakura trees show FDE-like (LOS 18.1) or `fileencryption=ice` (LOS 20/21/22.x) with no metadata, but A10/A12 formats and all runtime behaviour are **unverified**. **Android 16/17: no sakura ROM/device-tree evidence.** | `ANDROID_COMPATIBILITY.md`, `ENCRYPTION.md` |
-| Boot diagnostics? | **Implemented in source, unit-tested, not device-tested.** `sakura-diag` runs from init before the GUI, writes bounded/rotated logs to `/tmp/sakura-diag` (and mirrors to `/cache/recovery` when writable), and drives Settings → Error Logs plus an `! DIAG` status-bar badge via a pinned theme patch. Conventional `adb pull` works even when the GUI never starts | `DIAGNOSTICS.md` |
-| Decryption? | Source config declares FDE + FBE-without-metadata flags and TEE service wiring; **metadata encryption unsupported**. **0/20** proprietary QTI blobs present, no production image built, no hardware test — **decryption unverified** | `ENCRYPTION.md`, `IMAGE_AUDIT.md` |
+| Android 9–17 support? | **Not established as 9–17 decryption support.** Config declares FDE (`encryptable=footer`) + FBE without metadata (`fileencryption=ice`, vendor FSCRYPT_MODE_PRIVATE form); metadata encryption is **off by default** with an explicit opt-in that the shipped kernels cannot use (no `dm-default-key`). Inspected sakura trees show FDE-like (LOS 18.1) or `fileencryption=ice` (LOS 20/21/22.x) with no metadata, but A10/A12 formats and all runtime behaviour are **unverified**. **Android 16/17: no sakura ROM/device-tree evidence.** | `ANDROID_COMPATIBILITY.md`, `ENCRYPTION.md` |
+| Boot diagnostics? | **Implemented in source, unit-tested (74 tests), not device-tested.** `sakura-diag` runs from init before the GUI, writes bounded/rotated redacted logs to `/tmp/sakura-diag` (and mirrors to `/cache/recovery` only when `/proc/mounts` proves `/cache` is mounted read-write), classifies critical/recoverable/unclassified, persists its counters across processes, and drives Settings → Error Logs (12 features: viewers, filters, copy, export, clear) plus an `! DIAG` badge via a pinned theme patch. `adb pull /tmp/sakura-diag` works even when the GUI never starts | `DIAGNOSTICS.md` |
+| Decryption? | Source config declares FDE + FBE-without-metadata flags and TEE service wiring; metadata decryption is compiled in but **cannot work on this kernel** (`dm-default-key` absent in both available kernels). **0/20** proprietary QTI blobs present, no production image built, no hardware test — **decryption unverified** | `ENCRYPTION.md`, `IMAGE_AUDIT.md` |
 
 ## Repository layout
 
@@ -125,7 +125,11 @@ changing anything — it maps each likely Soong/make error to its actual cause.
 2. **A 4.9 kernel, not R11's stock 3.18.** Stock has no `fscrypt`/f2fs, so it
    cannot serve FBE ROMs. This is evidence-driven, not "newer is better".
 3. **No metadata encryption claims.** Neither kernel has `dm-default-key` and
-   the vendor is Keymaster 3.0. Advertising it would be a lie.
+   the vendor is Keymaster 3.0. Advertising it would be a lie. The opt-in
+   configuration (`SAKURA_METADATA_ENCRYPTION=1`) exists so a future
+   `dm-default-key` kernel needs no tree change, and stays off by default
+   because a non-empty `keydirectory=` makes recovery treat a plain `/data` as
+   encrypted (`ENCRYPTION.md` §6a).
 4. **Sakura-only.** `FOX_TARGET_DEVICES="sakura,sakura_india"` is preserved
    (exported from `device/xiaomi/sakura/vendorsetup.sh`; R12 renamed it from
    `OF_TARGET_DEVICES`, which `orangefox.mk` now rejects).

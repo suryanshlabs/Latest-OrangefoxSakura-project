@@ -8,11 +8,11 @@ This document describes the **current** sakura OrangeFox R12.0 (`fox_12.1`) sour
 |---|---|---|---|
 | **FDE (Full-Disk Encryption, legacy)** | Block-device encryption (dm-crypt) for `/data` using a crypto footer. User credential is verified via Gatekeeper/Keymaster to unwrap the disk key. | `encryptable=footer` is present as a separate fs_mgr flag token on both `/data` rows in `device/xiaomi/sakura/recovery/root/system/etc/recovery.fstab`. | **Configured/intended** for FDE-capable layouts; **not build-tested and not hardware-tested**. |
 | **FBE (File-Based Encryption)** | Per-file encryption (fscrypt) on `/data`; keys protected via Keymaster/Gatekeeper-backed mechanisms. | `fileencryption=ice` is present on both `/data` rows. `TW_INCLUDE_CRYPTO := true`, `TW_INCLUDE_CRYPTO_FBE := true` in `BoardConfig.mk`. 4.9 prebuilt kernel (fscrypt/f2fs capable per project analysis). No `metadata_encryption=` and no `keydirectory=` declared. | **Configured/intended** for **FBE without metadata encryption**, only where the on-disk format matches (see §3–§5); **not build-tested and not hardware-tested**. |
-| **Metadata encryption** | Separate metadata layer (commonly `metadata_encryption=` / `dm-default-key`, often with `keydirectory=`). Not the same as `fileencryption=...`. | **Not declared** in fstab/twrp.flags. `BOARD_USES_METADATA_PARTITION := false`. Metadata decryption macro/flags not enabled (see §3.1). | **Unsupported** for sakura with available vendor/kernel constraints. Do not claim support. |
+| **Metadata encryption (FBEv2)** | Separate metadata layer (commonly `metadata_encryption=` / `dm-default-key`, often with `keydirectory=`). Not the same as `fileencryption=...`. | **Off by default** in fstab/twrp.flags; `BOARD_USES_METADATA_PARTITION := false`. The pinned recovery's metadata path *is* compiled in (`-DTW_INCLUDE_FBE_METADATA_DECRYPT`, `libvold`). Opt-in configuration exists (`SAKURA_METADATA_ENCRYPTION=1` → `tools/configure_metadata.py`), see §6. | **Wired, not functional on this kernel**: neither available kernel has `dm-default-key` and the vendor is Keymaster 3.0 (no KeyMint). Do not claim decryption support. |
 
 ## 2. Current source configuration (actual)
 
-- **`/data` fstab entries** (`device/xiaomi/sakura/recovery/root/system/etc/recovery.fstab`): f2fs then ext4, both with fs_mgr flags `wait,check,encryptable=footer,fileencryption=ice,quota,formattable` (comma-separated). No `metadata_encryption=`, no `keydirectory=`.
+- **`/data` fstab entries** (`device/xiaomi/sakura/recovery/root/system/etc/recovery.fstab`): f2fs then ext4, both with fs_mgr flags `wait,check,encryptable=footer,fileencryption=ice,quota,formattable` (comma-separated). No `metadata_encryption=`, no `keydirectory=` (deliberate; §6 explains why a non-empty key directory is dangerous here and how to opt in).
 - **Crypto build flags** (`device/xiaomi/sakura/BoardConfig.mk`): `TW_INCLUDE_CRYPTO := true`, `TW_INCLUDE_CRYPTO_FBE := true`, `BOARD_USES_METADATA_PARTITION := false`.
 - **TEE/init integration** (`init.recovery.qcom.rc`, `init.recovery.qcom_decrypt.rc`, `device.mk`): device init fragments installed into recovery ramdisk; decryption rc defines/starts `qseecomd` → QTI Keymaster 3.0 → QTI Gatekeeper 1.0 (paths under `/system/bin`, destinations per manifest; `tools/check_init_services.py` enforces consistency). No nonexistent upstream `qcom_decrypt`/`qcom_decrypt_fbe` product modules.
 - **Vendor blobs** (`proprietary-files.txt`, `build/extract_blobs.sh`, `build/install_blobs.sh`, `build/check_crypto_blobs.sh`): **20** proprietary entries total (7 required, 13 optional). **0/20 present** in this workspace. Extraction is read-only from a user-supplied sakura Android 9 fastboot ROM with provenance/hashes recorded locally under gitignored `vendor_blobs/`. `check_crypto_blobs.sh --require` refuses crypto-gated builds by default; `SAKURA_ALLOW_MISSING_CRYPTO=1` is an explicit non-decryption opt-out only.
@@ -78,15 +78,84 @@ Sakura (Redmi 6 Pro) launched on Android 8.1 (API 27), official end state MIUI 1
 | Android 9 legacy FDE (`encryptable=footer`) | **Intended** | Footer flag + TEE chain configured; **unverified**. |
 | FBE without metadata encryption, userdata formatted with vendor `ice` (`FSCRYPT_MODE_PRIVATE`, v1-default context) | **Intended (best-effort target)** | Declared flags match inspected LOS 20/21/22.x sakura-unified fstabs; **unverified**, blobs/build/tests missing. |
 | FBE with standard `aes-256-xts` contents, different filenames/policy (e.g. v2), Adiantum, or other non-`ice` formats | **Unknown / likely mismatch** | Fstab declares `fbe.contents=ice`; no proof of match. Not changed. |
-| FBE with metadata encryption (`metadata_encryption=`, `keydirectory=`, dm-default-key) | **No (unsupported)** | Not declared; metadata path not enabled; vendor/kernel constraints documented. |
+| FBE with metadata encryption (`metadata_encryption=`, `keydirectory=`, dm-default-key) | **Off by default; opt-in wired (§6a)** | Not declared in the committed tree. The recovery's metadata path is compiled in; enabling it needs `SAKURA_METADATA_ENCRYPTION=1` **and** a kernel with `dm-default-key`, which neither available kernel has — so it is not usable on this device today. |
 | Android 16 / 17 on sakura | **Unknown / not applicable** | No sakura ROM/device-tree evidence. |
+
+## 6a. Metadata encryption (FBEv2): what is implemented, and the hard blocker
+
+**Implemented and shipped (opt-in, default off).** The expensive half of
+metadata decryption lives in the recovery, not in this device tree. Against the
+pinned `bootable/recovery` @ `8d2aad19deb158e935d70ca5b648162c2b2831ee`:
+
+| Evidence | Location |
+|---|---|
+| Metadata decryption is compiled whenever crypto is on | `Android.mk:360` adds `-DTW_INCLUDE_FBE_METADATA_DECRYPT` |
+| `libvold` / `MetadataCrypt` are linked | `Android.mk:139` |
+| fstab tokens are parsed (both spellings) | `partition.cpp:193` (`metadata_encryption=`), `partition.cpp:220` (`keydirectory=`) |
+| Decryption path uses them | `partitionmanager.cpp:677-700` |
+
+So the userspace path is already in the image; no device-tree flag is needed to
+compile it. What *is* needed is the fstab declaration, and that is the dangerous
+part:
+
+`Setup_Data_Partition()` treats **any non-empty key directory** as "this `/data`
+is encrypted". Declaring `keydirectory=` on a ROM that does not use a metadata
+layer therefore produces a **false encryption state**: recovery asks for a
+credential for a plain `/data`, and a tester reads that as "decryption is
+broken". Every inspected sakura fstab (`LOS 18.1`, `20`, `21`, `22.x`)
+declares `fileencryption=ice` and no metadata layer. Consequently metadata stays
+**off by default** and cannot be enabled by accident.
+
+**Enabling it (explicit, reversible):**
+
+```bash
+# adds metadata_encryption=aes-256-xts:wrappedkey_v0 and
+# keydirectory=/metadata/vold/metadata_encryption to both /data rows, plus a
+# /metadata partition row in recovery.fstab and twrp.flags
+python3 tools/configure_metadata.py --enable --confirm-rom-uses-metadata
+
+# or through the build entry point (also writes metadata_encryption.mk)
+SAKURA_METADATA_ENCRYPTION=1 ./build/build.sh --no-sync
+
+# inspect / revert (byte-exact)
+python3 tools/configure_metadata.py --check
+python3 tools/configure_metadata.py --disable
+```
+
+`--enable` refuses to run without `--confirm-rom-uses-metadata`; `--check`
+fails on a half-applied tree (tokens without a `/metadata` row, or the reverse);
+`--disable` restores the committed files byte-for-byte (regression-tested).
+`build/build.sh` refuses `SAKURA_METADATA_ENCRYPTION=1` together with
+`SAKURA_ALLOW_MISSING_CRYPTO=1`, because a metadata image without the TEE chain
+can never decrypt anything, and `build/verify_image.sh` cross-checks the tokens
+against the recorded mode.
+
+**The blocker that no device-tree change can fix:** metadata encryption needs
+`dm-default-key` in the kernel to map the metadata device, and a Keymaster that
+supports the wrapped-key format. Documented measurements of both kernels
+available here (`documentation/KERNEL_ANALYSIS.md` §2, §3 and §5, plus
+`REFERENCE_R11_ANALYSIS.md` §… "dm-default-key: no"): `dm-default-key` is **absent** from the stock 3.18.120 kernel and from the
+4.9.278 community candidate; sakura's vendor is Keymaster **3.0** (no KeyMint).
+Therefore:
+
+* metadata-encrypted `/data` **cannot be decrypted by this recovery on this
+  device** today, whatever the fstab says;
+* the opt-in exists so that a future `dm-default-key` kernel can be used without
+  touching the device tree again, and so the configuration can be validated on
+  hardware that does support it;
+* no sakura ROM inspected uses metadata encryption, so the default build loses
+  nothing.
+
+This is deliberately stated as **implemented-but-blocked**, not as working
+support. Claiming otherwise would be the exact failure mode this audit exists to
+prevent.
 
 ## 7. Verification status (executed checks only)
 
 | Item | Status | Evidence |
 |---|---|---|
 | Source fstab/config consistency (comma tokens, no metadata flags, crypto flags/init wiring) | **PASS (executed)** | `python3 tools/static_checks.py` → **PASS (all checks)**; WARN `0/20` proprietary blobs. |
-| Tooling/unit regression tests | **PASS (executed)** | `python3 -m unittest discover -s tests` → **18 tests, OK** (synthetic fixtures; **not** genuine sakura firmware). |
+| Tooling/unit regression tests | **PASS (executed)** | `python3 -m unittest discover -s tests` → **74 tests, OK** (synthetic fixtures; **not** genuine sakura firmware). Includes the metadata tool: enable requires confirmation, `--disable` is byte-exact, half-applied trees fail `--check`. |
 | Pinned recovery parsing of fstab/flags | **Verified by source inspection** | `bootable/recovery@8d2aad19` `partition.cpp`: comma separator for `fstab_ver==2`, `encryptable` key location, `fileencryption` → `fbe.contents/filenames`. Runtime unverified. |
 | `ice` meaning in android-12.1 | **Verified by source inspection** | `system/extras/libfscrypt/fscrypt.cpp` (android12-release): `"ice"` → `FSCRYPT_MODE_PRIVATE`. |
 | Genuine firmware blob extraction/integration | **Not completed** | No genuine sakura A9 fastboot ROM; `0/20` blobs. |

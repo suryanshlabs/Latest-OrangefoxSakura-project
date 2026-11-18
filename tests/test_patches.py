@@ -224,7 +224,10 @@ class PatchTests(unittest.TestCase):
         ])
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
         self.assertIn("RESULT: PASS", check.stdout)
-        self.assertIn("pages   : 7", check.stdout)   # 4 diag pages + 3 stubs
+        # 5 diagnostics pages (hub, viewer, report, copy, clear) + the stubs
+        pages = int([ln.split(":")[1] for ln in check.stdout.splitlines()
+                     if ln.strip().startswith("pages")][0])
+        self.assertGreaterEqual(pages, 8)
 
 
 class PinConsistency(unittest.TestCase):

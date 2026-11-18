@@ -97,10 +97,17 @@ TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 #                                     it looked like configuration and did nothing.
 #   TW_INCLUDE_FBE                  - same: the build reads TW_INCLUDE_CRYPTO_FBE.
 #
-# Metadata encryption (dm-default-key + KM4/KeyMint) is NOT available on this
-# device; see documentation/ENCRYPTION.md §4. Do not enable the metadata
-# options here — it would silently produce a build that cannot mount the data
-# it claims to decrypt.
+# Metadata encryption (FBEv2: dm-default-key + wrapped keys) is implemented in
+# the pinned recovery itself (Android.mk adds -DTW_INCLUDE_FBE_METADATA_DECRYPT
+# and links libvold whenever TW_INCLUDE_CRYPTO is true), so no C++ change is
+# needed. It stays disabled by default because declaring keydirectory= makes
+# partition.cpp treat /data as encrypted even when it is not, and every
+# inspected sakura ROM fstab uses fileencryption=ice without a metadata layer.
+# Enabling it is an explicit, reversible build step performed by
+# build/build.sh (SAKURA_METADATA_ENCRYPTION=1), which calls
+# tools/configure_metadata.py and writes metadata_encryption.mk; that fragment
+# is included by device.mk (parsed after this file) and overrides the default
+# below. See documentation/ENCRYPTION.md section 6.
 # ---------------------------------------------------------------------------
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_CRYPTO_FBE := true
@@ -133,6 +140,13 @@ PRODUCT_FULL_TREBLE_OVERRIDE := true
 # Recovery / TWRP-OrangeFox display + hardware
 # ---------------------------------------------------------------------------
 TW_THEME := portrait_hdpi
+# Panel resolution (1080x2280, `OF_SCREEN_H := 2280` in vendorsetup.sh).
+# gui/libguitwrp_defaults.go derives the theme from these when TW_THEME is empty,
+# so declaring them is the documented safety net for the Soong vendor-config
+# namespace: without them an unexported TW_THEME hard-fails the build with
+# "Could not find ui.xml for TW_THEME: not set" (four CI runs died there).
+TARGET_SCREEN_WIDTH := 1080
+TARGET_SCREEN_HEIGHT := 2280
 TW_SCREEN_BLANK_ON_BOOT := true
 TW_NO_SCREEN_BLANK := true
 TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"

@@ -60,7 +60,7 @@ Status vocabulary used: **Research only · Source verified · Build verified · 
 
 ## 5. Metadata encryption (reconfirmed)
 
-- Inspected sakura/common fstabs (LOS 18.1/20/21/22.x) declare **no** `metadata_encryption=` / `keydirectory=`. This repo declares none and sets `BOARD_USES_METADATA_PARTITION := false`; the pinned recovery's metadata path requires `TW_INCLUDE_FBE_METADATA_DECRYPT` and fstab data (not enabled). Documented vendor/kernel constraints (KM 3.0-era vendor, no dm-default-key in kernels relied on here) mean metadata-encrypted `/data` is **not supportable** by adding flags. **Unsupported.**
+- Inspected sakura/common fstabs (LOS 18.1/20/21/22.x) declare **no** `metadata_encryption=` / `keydirectory=`. This repo declares none and sets `BOARD_USES_METADATA_PARTITION := false`; the pinned recovery already compiles the metadata path (`-DTW_INCLUDE_FBE_METADATA_DECRYPT` + `libvold`) whenever crypto is on, so what was missing was only fstab data — now an explicit opt-in (`SAKURA_METADATA_ENCRYPTION=1`). Documented vendor/kernel constraints (KM 3.0-era vendor, no `dm-default-key` in either kernel relied on here) mean metadata-encrypted `/data` still **cannot be decrypted on this device**. **Off by default, wired but blocked.**
 
 ## 6. TEE dependency chain (sakura Android 9 vendor, intended)
 

@@ -6,31 +6,62 @@
 # ---------------
 # When recovery fails before the GUI starts, the only evidence used to be
 # /tmp/recovery.log, which is unreachable unless adbd came up and the tester
-# knew the exact path. This collector runs from init at `on boot`, before the
-# GUI, so a boot failure leaves a timestamped, component-tagged trail in a
+# knew the exact path. This collector runs from init at `on late-init`, before
+# the GUI, so a boot failure leaves a timestamped, component-tagged trail in a
 # tmpfs that adbd can always read.
 #
 # STORAGE RULES (important)
 # -------------------------
 #   * /tmp/sakura-diag        always used; tmpfs, never encrypted, lost on reboot.
 #   * /cache/recovery/sakura-diag
-#                             mirrored only when /cache is already mounted and
-#                             writable. /cache is /data/cache, so on an
-#                             encrypted, undecrypted device it is NOT available;
-#                             the mirror then silently does nothing. This script
-#                             NEVER mounts, formats or writes to /data.
-#   * /sdcard/Fox/diag        explicit export only, and only when /sdcard is
-#                             already writable. Never required.
+#                             mirrored ONLY when /proc/mounts proves that the
+#                             directory is on a mounted, read-write, real
+#                             filesystem. /cache is its own ext4 partition on
+#                             this device (recovery.fstab:
+#                             by-name/cache -> /cache); it is a partition of
+#                             its own, not a directory inside /data, and it is
+#                             not available before that partition is mounted.
+#                             If it is not mounted, nothing is created:
+#                             a directory inside the ramdisk must never be
+#                             mistaken for a persistent copy.
+#   * /sdcard/Fox/diag        explicit export/copy only, and only when /sdcard is
+#                             already writable. Never required, never mounted by
+#                             this script.
 #
-# The collector is bounded: it samples for at most SAKURA_DIAG_WATCH_ITERATIONS
-# intervals (default 18 x 5 s), never waits on a service without a timeout, and
-# never blocks init (it runs as a `oneshot` init service).
+# This script NEVER mounts, formats or writes to /data, /metadata or any other
+# partition.
 #
 # SENSITIVE DATA
 # --------------
-# Logs are filtered through redact() before a report is produced. Passwords,
-# PINs, tokens, keys, serial numbers and IMEIs are removed. Raw logs stay
-# root-only (0750) in /tmp and /cache; the exported report is also redacted.
+# Two independent layers:
+#   1. props.txt is built from an allow-list AND a sensitive-name block-list, so
+#      serial numbers, IMEI/MEID, MAC addresses, tokens and credentials never
+#      enter the diagnostic directory at all;
+#   2. everything that is written for sharing (dmesg, logcat, the redacted copy
+#      of recovery.log, every /cache and /sdcard copy, the report) passes through
+#      redact(), which understands both `key=value` and the real Android
+#      `[key]: [value]` getprop/logcat format.
+# /tmp/recovery.log itself is never modified; the GUI shows a redacted copy.
+#
+# SEVERITY MODEL
+# --------------
+#   errors   critical only: kernel panic/Oops/BUG, kernel or storage I/O errors,
+#            filesystem corruption, logcat FATAL, and required TEE services that
+#            failed or did not start within the grace period.
+#   warnings recoverable: SELinux avc denials, mmc/MMC timeouts, benign
+#            framework/optional-HAL logcat errors (tag allow-list).
+#   triage   every other logcat E/F line. Kept in triage.txt and the raw logs,
+#            never counted as a confirmed failure. Nothing is discarded.
+#
+# BOOT MONITOR
+# ------------
+# The watch loop records boot stages from evidence that exists in the pinned
+# source (init properties and /proc/mounts):
+#   early-boot -> services -> data-mount/decrypt -> gui-process -> done
+# `pidof recovery` only proves the GUI *process* exists (the pinned GUI keeps
+# `tw_gui_done` in DataManager, not in a property), so a reached process is
+# reported as `gui-process-up`, never as "the GUI rendered".
+# The loop is bounded (default 18 x 5 s) and every stage change is logged.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -43,26 +74,34 @@ DIAG_ROOT="${SAKURA_DIAG_ROOT:-/tmp/sakura-diag}"
 CACHE_DIR="${SAKURA_DIAG_CACHE:-/cache/recovery/sakura-diag}"
 SDCARD_DIR="${SAKURA_DIAG_SDCARD:-/sdcard/Fox/diag}"
 FIXTURES="${SAKURA_DIAG_FIXTURES:-}"
+MOUNTS_FILE="${SAKURA_DIAG_MOUNTS:-/proc/mounts}"
+RECOVERY_LOG="${SAKURA_DIAG_RECOVERY_LOG:-/tmp/recovery.log}"
 NO_SETPROP="${SAKURA_DIAG_NO_SETPROP:-0}"
 NO_MIRROR="${SAKURA_DIAG_NO_MIRROR:-0}"
 WATCH_ITERATIONS="${SAKURA_DIAG_WATCH_ITERATIONS:-18}"
 WATCH_INTERVAL="${SAKURA_DIAG_WATCH_INTERVAL:-5}"
 MAX_LOG_BYTES="${SAKURA_DIAG_MAX_BYTES:-262144}"   # 256 KiB per log
 MAX_ROTATIONS="${SAKURA_DIAG_MAX_ROTATIONS:-3}"
+# How many classification passes a required service may be absent before it is
+# an error. The first pass runs at late-init, before `on boot` starts the TEE
+# chain; without this a healthy boot would light the badge.
+SERVICE_GRACE="${SAKURA_DIAG_SERVICE_GRACE:-2}"
 
 REQUIRED_SERVICES="qseecomd vendor.keymaster-3-0 vendor.gatekeeper-1-0"
-# Services whose absence is informational, never an error. Keep this list
-# empty unless a service is genuinely optional on every supported ROM.
+# Services whose absence is informational, never an error.
 OPTIONAL_SERVICES=""
+# Logcat tags that are expected to log errors in recovery on this platform.
+# Everything not listed and not FATAL stays in triage.txt instead of becoming a
+# confirmed failure.
+BENIGN_LOGCAT_TAGS="AudioFlinger audio_hw_primary audio_route cameraserver CameraProvider wificond wpa_supplicant rild qti_sensors sensors thermal-engine perfd mpdecision chatty"
 
 ERRORS=0
 WARNINGS=0
-BOOT_STAGE="init"
-# The first snapshot runs at late-init, before `on boot` starts the TEE
-# services. An unset init.svc.* at that moment means "not started yet", not
-# "failed". Only the second and later classifications may call it an error;
-# failed/crashed is always an error.
+TRIAGE=0
+SERVICE_ERRORS=0
+BOOT_STAGE=""
 CLASSIFY_PASS=0
+CRYPTO_MODE=""
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -73,9 +112,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 now() { date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "1970-01-01 00:00:00"; }
 
-prop() { # prop <name> -> value (fixture-aware)
+prop() { # prop <name> -> value (fixture-aware, both prop formats)
     if [ -n "$FIXTURES" ] && [ -f "$FIXTURES/props.txt" ]; then
-        sed -n "s/^$1=//p" "$FIXTURES/props.txt" | head -n 1
+        # fixture format is accepted in either form:
+        #   key=value
+        #   [key]: [value]
+        sed -n -e "s/^$1=//p" \
+               -e "s/^\[$1\]:[[:space:]]*\[\(.*\)\]$/\1/p" \
+               "$FIXTURES/props.txt" 2>/dev/null | head -n 1
         return 0
     fi
     if have getprop; then
@@ -95,8 +139,86 @@ ensure_root() {
     return 0
 }
 
-# append_log <file> <component> <severity> <message...>
-append_log() {
+# ---------------------------------------------------------------------------
+# State: BOOT_STAGE / CLASSIFY_PASS / counters must survive a new shell
+#
+# The GUI runs `sakura-diag report` in a *separate* process, so shell variables
+# from the boot supervisor do not exist there. Without a state file the report
+# printed "errors=0" and reset the service classification to its first pass.
+# The file is the single source of truth for the counters; report never
+# recomputes them when the file exists.
+# ---------------------------------------------------------------------------
+STATE_FILE() { printf '%s/state\n' "$DIAG_ROOT"; }
+
+load_state() {
+    _sf=$(STATE_FILE)
+    [ -f "$_sf" ] || return 1
+    _v=$(sed -n 's/^boot_stage=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && BOOT_STAGE="$_v"
+    _v=$(sed -n 's/^classify_pass=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && CLASSIFY_PASS="$_v"
+    _v=$(sed -n 's/^errors=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && ERRORS="$_v"
+    _v=$(sed -n 's/^warnings=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && WARNINGS="$_v"
+    _v=$(sed -n 's/^triage=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && TRIAGE="$_v"
+    _v=$(sed -n 's/^service_errors=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && SERVICE_ERRORS="$_v"
+    _v=$(sed -n 's/^crypto_mode=//p' "$_sf" | head -n 1)
+    [ -n "$_v" ] && CRYPTO_MODE="$_v"
+    return 0
+}
+
+save_state() {
+    [ -d "$DIAG_ROOT" ] || return 0
+    _sf=$(STATE_FILE)
+    {
+        printf 'boot_stage=%s\n' "${BOOT_STAGE:-unknown}"
+        printf 'classify_pass=%s\n' "$CLASSIFY_PASS"
+        printf 'errors=%s\n' "$ERRORS"
+        printf 'warnings=%s\n' "$WARNINGS"
+        printf 'triage=%s\n' "$TRIAGE"
+        printf 'service_errors=%s\n' "$SERVICE_ERRORS"
+        printf 'crypto_mode=%s\n' "$(crypto_mode)"
+        printf 'updated=%s\n' "$(now)"
+    } > "$_sf.tmp" 2>/dev/null && mv -f "$_sf.tmp" "$_sf" 2>/dev/null
+    chmod 0640 "$_sf" 2>/dev/null || true
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Crypto mode
+#
+# SAKURA_ALLOW_MISSING_CRYPTO=1 builds an image without the vendor TEE chain.
+# build/build.sh records that in ro.sakura.crypto.mode so the collector can tell
+# an *intentional* no-decryption build from a broken full one: in `none` mode the
+# TEE services are not installed at all, so their absence is not a boot error.
+# ---------------------------------------------------------------------------
+crypto_mode() {
+    if [ -n "$CRYPTO_MODE" ]; then
+        printf '%s\n' "$CRYPTO_MODE"
+        return 0
+    fi
+    if [ -n "${SAKURA_DIAG_CRYPTO_MODE:-}" ]; then
+        CRYPTO_MODE="$SAKURA_DIAG_CRYPTO_MODE"
+        printf '%s\n' "$CRYPTO_MODE"
+        return 0
+    fi
+    _cm=$(prop ro.sakura.crypto.mode)
+    case "$_cm" in
+        none|full) CRYPTO_MODE="$_cm" ;;
+        *)         CRYPTO_MODE="full" ;;
+    esac
+    printf '%s\n' "$CRYPTO_MODE"
+}
+
+crypto_is_none() { [ "$(crypto_mode)" = "none" ]; }
+
+# ---------------------------------------------------------------------------
+# Log writing, bounds and rotation
+# ---------------------------------------------------------------------------
+append_log() { # append_log <file> <component> <severity> <message...>
     _file="$1"; _component="$2"; _severity="$3"; shift 3
     [ -d "$DIAG_ROOT" ] || return 0
     printf '%s [%s] %s: %s\n' "$(now)" "$_severity" "$_component" "$*" \
@@ -134,19 +256,142 @@ cap_file() { # cap_file <path> - keep only the tail if still too large
 }
 
 # ---------------------------------------------------------------------------
-# Redaction - must be applied before anything leaves root-only storage
+# Redaction - applied before anything is written to a shared location
 # ---------------------------------------------------------------------------
+# Patterns are written for POSIX ERE (toybox sed -E): no \b, no GNU extensions.
+# Two input shapes must be covered:
+#   key=value                      (logcat messages, reports, tool output)
+#   [ro.boot.serialno]: [xyz]      (real `getprop` output)
+SENSITIVE_NAME='([Ss]erialno|[Ss]erial|[Ii]mei|[Mm]eid|[Aa]ndroid_id|[Mm]acaddr|[Bb]tmac|[Ww]ifi_?[Mm]ac|[Tt]oken|[Ss]ecret|[Pp]assword|[Pp]asswd|[Pp]assphrase|[Pp]incode|[Pp]attern|[Cc]redential|[Kk]eystore|[Kk]eymaster|[Ww]idevine|[Oo]em_id)'
+
 redact() {
-    # Reads stdin, writes stdout. Deliberately conservative: it removes values
-    # that look like credentials, not whole log lines, so context is preserved.
+    # Layer 0: the device's own identifiers are removed by VALUE, because a
+    # serial number printed on its own ("(...ABCDEF...)") carries no key name
+    # for the pattern layer to match. Only plain identifier characters are used,
+    # so the value can never be interpreted as a sed expression.
+    _rt="${TMPDIR:-/tmp}/.sakura-redact.$$"
+    if ! cat > "$_rt" 2>/dev/null; then
+        # No writable temp: fall back to the pattern layer only.
+        sed -E \
+            -e 's/\[([^]]*'"$SENSITIVE_NAME"'[^]]*)\]:[[:space:]]*\[[^]]*\]/[\1]: [<redacted>]/g' \
+            -e 's/([A-Za-z0-9_.-]*'"$SENSITIVE_NAME"'[A-Za-z0-9_.-]*)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1\3<redacted>/g' \
+            -e 's/([0-9A-Fa-f][0-9A-Fa-f]:){5}[0-9A-Fa-f][0-9A-Fa-f]/<redacted-mac>/g' \
+            -e 's/(^|[^0-9])([0-9]{15})([^0-9]|$)/\1<redacted-imei>\3/g' \
+            -e 's/([Aa]uthorization|[Bb]earer)[[:space:]]+[A-Za-z0-9._~+\/=-]+/\1 <redacted>/g'
+        return 0
+    fi
+
+    for _rp in ro.serialno ro.boot.serialno ro.product.serialno \
+               ro.imei ro.meid ro.boot.imei ro.boot.meid; do
+        _rv=$(prop "$_rp")
+        case "$_rv" in
+            ""|*[!A-Za-z0-9._-]*) continue ;;
+        esac
+        sed -e "s/$_rv/<redacted>/g" "$_rt" > "$_rt.n" 2>/dev/null \
+            && mv -f "$_rt.n" "$_rt" 2>/dev/null
+    done
+
+    # Layer 1: key=value and [key]: [value] credentials and identifiers.
     sed -E \
-        -e 's/(password|passwd|passphrase|pincode|pin|pattern|token|secret|credential|keystore_password)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig' \
-        -e 's/(ro\.serialno|ro\.boot\.serialno|ro\.boot\.serialno)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig' \
-        -e 's/(serial|imei|meid)[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig' \
-        -e 's/(ro\.product\.(serialno|imei|meid))[[:space:]]*[=:][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig' \
-        -e 's/([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}/<redacted-mac>/g' \
-        -e 's/\b[0-9]{15}\b/<redacted-imei>/g' \
-        -e 's/(keymaster|gatekeeper)[^ ]*key[^ ]*[=:][^[:space:]]+/\1-key=<redacted>/Ig'
+        -e 's/\[([^]]*'"$SENSITIVE_NAME"'[^]]*)\]:[[:space:]]*\[[^]]*\]/[\1]: [<redacted>]/g' \
+        -e 's/([A-Za-z0-9_.-]*'"$SENSITIVE_NAME"'[A-Za-z0-9_.-]*)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1\3<redacted>/g' \
+        -e 's/([0-9A-Fa-f][0-9A-Fa-f]:){5}[0-9A-Fa-f][0-9A-Fa-f]/<redacted-mac>/g' \
+        -e 's/(^|[^0-9])([0-9]{15})([^0-9]|$)/\1<redacted-imei>\3/g' \
+        -e 's/([Aa]uthorization|[Bb]earer)[[:space:]]+[A-Za-z0-9._~+\/=-]+/\1 <redacted>/g' \
+        "$_rt" 2>/dev/null
+    rm -f "$_rt" "$_rt.n" 2>/dev/null
+    return 0
+}
+
+# Properties are filtered by name *before* they are stored, so a raw value never
+# exists in the diagnostic directory (and therefore cannot leak through /cache,
+# /sdcard, the GUI viewers or a report bundle).
+SENSITIVE_PROP_NAME='serialno|serial|imei|meid|macaddr|btmac|wifi.*mac|android_id|oem_id|token|secret|password|passwd|pincode|pattern|keystore|keymaster|widevine|drm.*id'
+# Matches both the real `[key]: [value]` shape and a plain `key=value` shape.
+SAFE_PROP_PREFIX='^\[?(ro\.(product|build|hardware|crypto|sakura|boot\.(bootdevice|verifiedbootstate|flash\.locked|baseband)|twrp|orangefox)|ro\.sakura|init\.svc\.|sys\.usb|twrp\.|of\.|metadata\.|fbe\.|vendor\.boot\.hardware)'
+
+# ---------------------------------------------------------------------------
+# Mount inspection (evidence-based; /proc/mounts is the only authority)
+# ---------------------------------------------------------------------------
+# Prints "<mountpoint>|<fstype>|<options>" for the longest mount point that
+# contains <path>, or nothing when the path is not on a mount at all.
+mount_lookup() {
+    _ml_path="$1"
+    [ -f "$MOUNTS_FILE" ] || return 0
+    awk -v want="$_ml_path" '
+        {
+            mp = $2
+            gsub(/\\040/, " ", mp)
+            gsub(/\\011/, "\t", mp)
+            n = length(mp)
+            if (n == 0) next
+            match_it = 0
+            if (mp == "/") match_it = 1
+            else if (want == mp) match_it = 1
+            else if (substr(want, 1, n) == mp && substr(want, n + 1, 1) == "/") match_it = 1
+            if (match_it && n > best) {
+                best = n
+                line = mp "|" $3 "|" $4
+            }
+        }
+        END { if (line != "") print line }
+    ' "$MOUNTS_FILE" 2>/dev/null
+}
+
+# rw | read-only | unmounted | not-persistent | unwritable | disabled
+cache_state() {
+    if [ "$NO_MIRROR" = 1 ]; then
+        printf 'disabled\n'
+        return 0
+    fi
+    _cs=$(mount_lookup "$CACHE_DIR")
+    if [ -z "$_cs" ]; then
+        printf 'unmounted\n'
+        return 0
+    fi
+    _cs_mp=${_cs%%|*}
+    if [ "$_cs_mp" = "/" ]; then
+        # Only the root filesystem matches: /cache itself is not mounted, so
+        # there is no separate partition to persist to.
+        printf 'unmounted\n'
+        return 0
+    fi
+    _cs_fs=${_cs#*|}
+    _cs_fs=${_cs_fs%%|*}
+    _cs_opt=${_cs##*|}
+    case ",$_cs_opt," in
+        *,rw,*) ;;
+        *) printf 'read-only\n'; return 0 ;;
+    esac
+    case "$_cs_fs" in
+        tmpfs|rootfs|ramfs)
+            # The directory exists inside the ramdisk: not a persistent copy.
+            printf 'not-persistent\n'
+            return 0
+            ;;
+    esac
+    mkdir -p "$CACHE_DIR" 2>/dev/null || { printf 'unwritable\n'; return 0; }
+    : > "$CACHE_DIR/.write_test" 2>/dev/null || { printf 'unwritable\n'; return 0; }
+    rm -f "$CACHE_DIR/.write_test" 2>/dev/null
+    printf 'rw\n'
+    return 0
+}
+
+cache_writable() { [ "$(cache_state)" = "rw" ]; }
+
+# Internal storage is only used when it is already mounted and writable. The
+# root is overridable purely so the off-device tests can simulate both states.
+SDCARD_ROOT="${SAKURA_DIAG_SDCARD_ROOT:-/sdcard}"
+sdcard_writable() { [ -d "$SDCARD_ROOT" ] && [ -w "$SDCARD_ROOT" ]; }
+
+# Copy a log to a shared location after redaction. Never copies raw bytes: the
+# destination is always a sanitized copy.
+copy_redacted() { # copy_redacted <src> <dst>
+    [ -f "$1" ] || return 1
+    mkdir -p "$(dirname "$2")" 2>/dev/null || return 1
+    redact < "$1" > "$2" 2>/dev/null || return 1
+    chmod 0640 "$2" 2>/dev/null || true
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -170,9 +415,9 @@ collect_logcat() {
     if [ -n "$FIXTURES" ] && [ -f "$FIXTURES/logcat.txt" ]; then
         redact < "$FIXTURES/logcat.txt" > "$_out" 2>/dev/null
     elif have logcat; then
-        # Redact at collection time: the GUI viewer shows this file directly,
-        # so credentials must never reach it (the report is redacted again).
-        logcat -d -v threadtime -t 4000 2>/dev/null | tail -n 4000 | redact > "$_out" 2>/dev/null
+        # Redacted at collection time: the GUI viewer shows this file directly.
+        logcat -d -v threadtime -t 4000 2>/dev/null | tail -n 4000 \
+            | redact > "$_out" 2>/dev/null
     else
         : > "$_out" 2>/dev/null || true
         append_log boot-diag.txt logcat WARN "logcat unavailable in this recovery"
@@ -185,7 +430,7 @@ collect_mounts() {
     if [ -n "$FIXTURES" ] && [ -f "$FIXTURES/mounts.txt" ]; then
         cp -f "$FIXTURES/mounts.txt" "$_out" 2>/dev/null
     else
-        cat /proc/mounts > "$_out" 2>/dev/null || : > "$_out"
+        cat "$MOUNTS_FILE" > "$_out" 2>/dev/null || : > "$_out"
     fi
     cap_file "$_out"
 }
@@ -195,7 +440,10 @@ collect_services() {
     : > "$_out" 2>/dev/null || true
 
     if [ -n "$FIXTURES" ] && [ -f "$FIXTURES/props.txt" ]; then
-        _keys=$(sed -n 's/^\(init\.svc\.[^=]*\)=.*/\1/p' "$FIXTURES/props.txt")
+        _keys=$(sed -n \
+            -e 's/^\(init\.svc\.[^=]*\)=.*/\1/p' \
+            -e 's/^\[\(init\.svc\.[^]]*\)\]:.*/\1/p' \
+            "$FIXTURES/props.txt")
     elif have getprop; then
         _keys=$(getprop 2>/dev/null | sed -n 's/^\[\(init\.svc\.[^]]*\)\]:.*/\1/p')
     else
@@ -219,30 +467,96 @@ collect_services() {
 
 collect_props() {
     _out="$DIAG_ROOT/props.txt"
+    _tmp="$DIAG_ROOT/.props.raw"
     if [ -n "$FIXTURES" ] && [ -f "$FIXTURES/props.txt" ]; then
-        cp -f "$FIXTURES/props.txt" "$_out" 2>/dev/null
+        cp -f "$FIXTURES/props.txt" "$_tmp" 2>/dev/null
     elif have getprop; then
-        getprop 2>/dev/null | grep -E '^\[(ro\.(product|build|hardware|crypto|boot)|init\.svc|sys\.usb|of\.boot_diag)' \
-            > "$_out" 2>/dev/null || : > "$_out"
+        getprop 2>/dev/null > "$_tmp" 2>/dev/null
     else
-        : > "$_out" 2>/dev/null || true
+        : > "$_tmp" 2>/dev/null || true
     fi
+    # Allow-list of prefixes + block-list of sensitive names + value redaction.
+    grep -E "$SAFE_PROP_PREFIX" "$_tmp" 2>/dev/null \
+        | grep -viE "$SENSITIVE_PROP_NAME" \
+        | redact > "$_out" 2>/dev/null || : > "$_out"
+    rm -f "$_tmp" 2>/dev/null
     cap_file "$_out"
 }
 
 collect_encryption() {
     _out="$DIAG_ROOT/encryption.txt"
     {
+        echo "crypto mode       = $(crypto_mode)"
+        echo "metadata mode     = $(metadata_mode)"
         echo "ro.crypto.state   = $(prop ro.crypto.state)"
         echo "ro.crypto.type    = $(prop ro.crypto.type)"
         echo "ro.crypto.fs_type = $(prop ro.crypto.fs_type)"
         echo "vold.decrypt      = $(prop vold.decrypt)"
+        echo "twrp.decrypt.done = $(prop twrp.decrypt.done)"
+        echo "metadata.contents = $(prop metadata.contents)"
+        echo "fbe.contents      = $(prop fbe.contents)"
+        echo "fbe.filenames     = $(prop fbe.filenames)"
         echo "-- /data mount lines --"
         grep -E '[[:space:]]/data[[:space:]]' "$DIAG_ROOT/mounts.txt" 2>/dev/null || echo "(none)"
+        echo "-- metadata mount lines --"
+        grep -E '[[:space:]]/metadata[[:space:]]' "$DIAG_ROOT/mounts.txt" 2>/dev/null || echo "(none)"
         echo "-- dm-crypt / dm-default-key devices --"
         grep -E 'dm-crypt|dm-default-key' "$DIAG_ROOT/mounts.txt" 2>/dev/null || echo "(none)"
+        echo "-- /cache --"
+        echo "state             = $(cache_state)"
+        echo "mount             = $(mount_lookup "$CACHE_DIR")"
     } > "$_out" 2>/dev/null || true
     cap_file "$_out"
+}
+
+# A redacted, bounded copy of TWRP's own log. The original is never modified;
+# this is what the GUI viewer and every export share.
+collect_recovery_log() {
+    _out="$DIAG_ROOT/recovery-log.txt"
+    if [ -f "$RECOVERY_LOG" ]; then
+        tail -c "$MAX_LOG_BYTES" "$RECOVERY_LOG" 2>/dev/null | redact > "$_out" 2>/dev/null
+    else
+        : > "$_out" 2>/dev/null || true
+    fi
+    cap_file "$_out"
+}
+
+# A filtered view for the GUI: everything that mentions the TEE chain, fscrypt,
+# dm devices or /data, taken from the already-classified files.
+collect_crypto_filter() {
+    _out="$DIAG_ROOT/crypto-errors.txt"
+    {
+        echo "crypto mode        = $(crypto_mode)"
+        echo "metadata mode      = $(metadata_mode)"
+        echo "ro.crypto.state    = $(prop ro.crypto.state)"
+        echo "twrp.decrypt.done  = $(prop twrp.decrypt.done)"
+        echo "-- matches from errors / warnings / triage / boot log --"
+        grep -hiE 'keymaster|gatekeeper|qseecom|tee |fscrypt|fileencryption|dm-crypt|dm-default-key|metadata_encryption|decrypt|/data' \
+            "$DIAG_ROOT/errors.txt" "$DIAG_ROOT/warnings.txt" \
+            "$DIAG_ROOT/triage.txt" "$DIAG_ROOT/boot-diag.txt" 2>/dev/null \
+            | tail -n 200
+    } > "$_out" 2>/dev/null || true
+    cap_file "$_out"
+}
+
+metadata_mode() {
+    _mm=$(prop ro.sakura.metadata_encryption)
+    case "$_mm" in
+        enabled) printf 'enabled\n' ;;
+        *)       printf 'disabled\n' ;;
+    esac
+}
+
+collect_all() {
+    collect_kernel
+    collect_logcat
+    collect_mounts
+    collect_services
+    collect_props
+    collect_recovery_log
+    collect_encryption
+    classify
+    collect_crypto_filter
 }
 
 # ---------------------------------------------------------------------------
@@ -255,46 +569,92 @@ count_matches() { # count_matches <file> <extended-regex>
     echo "${_n:-0}"
 }
 
+# append_matches <file> <regex> <max> <prefix> <destination>
+append_matches() {
+    _am_file="$1"; _am_re="$2"; _am_max="$3"; _am_prefix="$4"; _am_dst="$5"
+    [ -f "$_am_file" ] || return 0
+    # '|' as the delimiter: prefixes such as selinux/warn contain '/', which
+    # would end an s/// command early and silently produce nothing.
+    grep -E "$_am_re" "$_am_file" 2>/dev/null | head -n "$_am_max" \
+        | sed "s|^|[$_am_prefix] |" >> "$_am_dst" 2>/dev/null
+}
+
 classify() {
     : > "$DIAG_ROOT/errors.txt" 2>/dev/null || true
+    : > "$DIAG_ROOT/warnings.txt" 2>/dev/null || true
+    : > "$DIAG_ROOT/triage.txt" 2>/dev/null || true
     ERRORS=0
     WARNINGS=0
+    TRIAGE=0
+    SERVICE_ERRORS=0
     CLASSIFY_PASS=$((CLASSIFY_PASS + 1))
 
-    # --- kernel ------------------------------------------------------------
-    _kernel_re='(Kernel panic|BUG:|Oops|Call trace|Unable to handle kernel|I/O error|EXT4-fs error|F2FS-fs .*(error|corrupt)|blk_update_request: I/O error|mmc[0-9]*: (error|timeout))'
+    # --- kernel: critical faults -----------------------------------------
+    _kernel_re='(Kernel panic|Internal error: Oops|BUG: |Unable to handle kernel|Call trace:|EXT4-fs error|F2FS-fs .*(error|corrupt)|blk_update_request: I/O error|I/O error, dev |Buffer I/O error)'
     _kerr=$(count_matches "$DIAG_ROOT/dmesg.txt" "$_kernel_re")
     if [ "${_kerr:-0}" -gt 0 ]; then
         ERRORS=$((ERRORS + _kerr))
-        grep -E "$_kernel_re" "$DIAG_ROOT/dmesg.txt" 2>/dev/null | head -n 40 \
-            | sed 's/^/[kernel] /' >> "$DIAG_ROOT/errors.txt" 2>/dev/null
+        append_matches "$DIAG_ROOT/dmesg.txt" "$_kernel_re" 40 critical "$DIAG_ROOT/errors.txt"
     fi
 
-    # avc denials are WARN: the recovery runs permissive, so they are expected
-    # noise and must not raise the error badge.
-    _avc=$(count_matches "$DIAG_ROOT/dmesg.txt" 'avc: *denied')
-    WARNINGS=$((WARNINGS + _avc))
-    if [ "${_avc:-0}" -gt 0 ]; then
-        grep -E 'avc: *denied' "$DIAG_ROOT/dmesg.txt" 2>/dev/null | head -n 20 \
-            | sed 's/^/[selinux:warn] /' >> "$DIAG_ROOT/errors.txt" 2>/dev/null
+    # --- kernel: recoverable ---------------------------------------------
+    _kwarn_re='(avc: *denied|mmc[0-9]*: (error|timeout)|watchdog: BUG: soft lockup)'
+    _kwarn=$(count_matches "$DIAG_ROOT/dmesg.txt" 'avc: *denied')
+    _mmc=$(count_matches "$DIAG_ROOT/dmesg.txt" 'mmc[0-9]*: (error|timeout)')
+    _kwarn=$((_kwarn + _mmc))
+    _lockup=$(count_matches "$DIAG_ROOT/dmesg.txt" 'soft lockup')
+    # A soft lockup is a stall, not a panic: warn, but record it separately.
+    WARNINGS=$((WARNINGS + _kwarn + _lockup))
+    if [ "$_kwarn" -gt 0 ] || [ "$_lockup" -gt 0 ]; then
+        append_matches "$DIAG_ROOT/dmesg.txt" "$_kwarn_re" 40 selinux/warn "$DIAG_ROOT/warnings.txt"
     fi
 
-    # --- logcat ------------------------------------------------------------
+    # --- logcat ----------------------------------------------------------
     # `logcat -v threadtime` prints "<date> <time> <pid> <tid> E <tag>: msg".
-    # The earlier pattern only matched the "E/" brief format, so a real
-    # threadtime dump counted zero errors. Match both forms, once per line.
-    _logcat_re='(^| )[EF] |(^| )[EF]/|FATAL EXCEPTION'
-    _err=$(count_matches "$DIAG_ROOT/logcat.txt" "$_logcat_re")
-    if [ "${_err:-0}" -gt 0 ]; then
-        ERRORS=$((ERRORS + _err))
-        grep -E "$_logcat_re" "$DIAG_ROOT/logcat.txt" 2>/dev/null | head -n 60 \
-            | sed 's/^/[logcat] /' >> "$DIAG_ROOT/errors.txt" 2>/dev/null
+    # Matched once per line, in both threadtime and brief form.
+    _fatal_re='(FATAL EXCEPTION|Fatal signal|\*\*\* FATAL|E AndroidRuntime)'
+    _ef_re='(^| )[EF] |(^| )[EF]/'
+    _fatal=$(count_matches "$DIAG_ROOT/logcat.txt" "$_fatal_re")
+    if [ "${_fatal:-0}" -gt 0 ]; then
+        ERRORS=$((ERRORS + _fatal))
+        append_matches "$DIAG_ROOT/logcat.txt" "$_fatal_re" 40 fatal "$DIAG_ROOT/errors.txt"
     fi
 
-    # --- services ----------------------------------------------------------
-    # Only required services produce an error when stopped. A service in
-    # failed/crashed state is always an error. Optional services are never
-    # counted, so a ROM without an optional HAL does not show a false error.
+    # Everything else with an E/F level is triaged: benign tags become
+    # warnings, unknown tags stay visible in triage.txt but are not failures.
+    if [ -f "$DIAG_ROOT/logcat.txt" ]; then
+        grep -E "$_ef_re" "$DIAG_ROOT/logcat.txt" 2>/dev/null > "$DIAG_ROOT/.ef.tmp" || true
+        grep -Ev "$_fatal_re" "$DIAG_ROOT/.ef.tmp" 2>/dev/null > "$DIAG_ROOT/.ef2.tmp" || true
+        for _tag in $BENIGN_LOGCAT_TAGS; do
+            _n=$(grep -Ec "[[:space:]]$_tag[[:space:]]*:" "$DIAG_ROOT/.ef2.tmp" 2>/dev/null || true)
+            [ "${_n:-0}" -gt 0 ] && WARNINGS=$((WARNINGS + _n))
+        done
+        _benign_re=""
+        for _tag in $BENIGN_LOGCAT_TAGS; do
+            if [ -z "$_benign_re" ]; then _benign_re="[[:space:]]$_tag[[:space:]]*:"
+            else _benign_re="$_benign_re|[[:space:]]$_tag[[:space:]]*:"; fi
+        done
+        if [ -n "$_benign_re" ]; then
+            grep -E "$_benign_re" "$DIAG_ROOT/.ef2.tmp" 2>/dev/null \
+                | sed 's/^/[logcat:warn] /' >> "$DIAG_ROOT/warnings.txt" 2>/dev/null
+            grep -Ev "$_benign_re" "$DIAG_ROOT/.ef2.tmp" 2>/dev/null \
+                > "$DIAG_ROOT/.ef3.tmp" || : > "$DIAG_ROOT/.ef3.tmp"
+        else
+            cp -f "$DIAG_ROOT/.ef2.tmp" "$DIAG_ROOT/.ef3.tmp" 2>/dev/null
+        fi
+        _tri=$(count_matches "$DIAG_ROOT/.ef3.tmp" '.')
+        TRIAGE=$((TRIAGE + _tri))
+        if [ "${_tri:-0}" -gt 0 ]; then
+            head -n 60 "$DIAG_ROOT/.ef3.tmp" | sed 's/^/[logcat:triage] /' \
+                >> "$DIAG_ROOT/triage.txt" 2>/dev/null
+        fi
+        rm -f "$DIAG_ROOT/.ef.tmp" "$DIAG_ROOT/.ef2.tmp" "$DIAG_ROOT/.ef3.tmp" 2>/dev/null
+    fi
+
+    # --- services --------------------------------------------------------
+    # Only required services can produce an error. `failed`/`crashed` is always
+    # an error; a required service that is absent is an error only after the
+    # grace period (the first pass runs before `on boot` starts the TEE chain).
     while IFS= read -r _line; do
         [ -n "$_line" ] || continue
         _name=$(printf '%s' "$_line" | awk '{print $1}')
@@ -309,24 +669,37 @@ classify() {
         done
         [ "$_optional" = 1 ] && continue
 
+        if [ "$_required" = 1 ] && crypto_is_none; then
+            # Intentional no-decryption build: the TEE chain is not installed,
+            # so its absence is expected and must not raise the badge.
+            printf '[service] %s state=%s (not required: crypto mode none)\n' \
+                "$_name" "${_state:-unknown}" >> "$DIAG_ROOT/triage.txt" 2>/dev/null
+            continue
+        fi
+
         case "$_state" in
             running) ;;
-            failed|crashed|restarting)
+            failed|crashed)
                 ERRORS=$((ERRORS + 1))
-                printf '[service] %s state=%s (required=%s)\n' "$_name" "$_state" "$_required" \
+                SERVICE_ERRORS=$((SERVICE_ERRORS + 1))
+                printf '[service] %s state=%s (required=%s)\n' \
+                    "$_name" "$_state" "$_required" \
                     >> "$DIAG_ROOT/errors.txt" 2>/dev/null
+                ;;
+            restarting)
+                WARNINGS=$((WARNINGS + 1))
+                printf '[service] %s state=%s (restarting)\n' "$_name" "$_state" \
+                    >> "$DIAG_ROOT/warnings.txt" 2>/dev/null
                 ;;
             not-declared|stopped|"")
                 if [ "$_required" = 1 ]; then
-                    if [ "$CLASSIFY_PASS" -le 1 ]; then
-                        # Pre-`on boot`: the service has simply not been
-                        # started yet. Counting it here would light the badge
-                        # on a perfectly healthy boot.
-                        printf '[service] %s state=%s (pending; first pass)\n' \
-                            "$_name" "${_state:-unknown}" \
-                            >> "$DIAG_ROOT/errors.txt" 2>/dev/null
+                    if [ "$CLASSIFY_PASS" -lt "$SERVICE_GRACE" ]; then
+                        printf '[service] %s state=%s (pending; pass %s of %s)\n' \
+                            "$_name" "${_state:-unknown}" "$CLASSIFY_PASS" "$SERVICE_GRACE" \
+                            >> "$DIAG_ROOT/triage.txt" 2>/dev/null
                     else
                         ERRORS=$((ERRORS + 1))
+                        SERVICE_ERRORS=$((SERVICE_ERRORS + 1))
                         printf '[service] %s state=%s (required)\n' \
                             "$_name" "${_state:-unknown}" \
                             >> "$DIAG_ROOT/errors.txt" 2>/dev/null
@@ -334,22 +707,33 @@ classify() {
                 fi
                 ;;
         esac
-    done < "$DIAG_ROOT/services.txt"
+    done < "$DIAG_ROOT/services.txt" 2>/dev/null
 
-    # Missing TEE binaries are the single most common real failure on this
-    # port (0/20 blobs). Say it explicitly instead of a generic error.
-    _missing=""
-    for _bin in qseecomd android.hardware.keymaster@3.0-service-qti \
-                android.hardware.gatekeeper@1.0-service-qti; do
-        [ -x "/system/bin/$_bin" ] || _missing="$_missing $_bin"
-    done
-    if [ -n "$_missing" ] && [ -z "$FIXTURES" ]; then
-        append_log boot-diag.txt crypto WARN "TEE binaries missing:$_missing (extract vendor blobs; decryption cannot work)"
+    # Missing TEE binaries are the single most common real failure on this port.
+    # In an intentional no-decryption build they are expected.
+    if ! crypto_is_none; then
+        _missing=""
+        for _bin in qseecomd android.hardware.keymaster@3.0-service-qti \
+                    android.hardware.gatekeeper@1.0-service-qti; do
+            if [ -z "$FIXTURES" ] && [ ! -x "/system/bin/$_bin" ]; then
+                _missing="$_missing $_bin"
+            fi
+        done
+        if [ -n "$_missing" ]; then
+            WARNINGS=$((WARNINGS + 1))
+            printf '[crypto] TEE binaries missing:%s (extract vendor blobs; decryption cannot work)\n' \
+                "$_missing" >> "$DIAG_ROOT/warnings.txt" 2>/dev/null
+            append_log boot-diag.txt crypto WARN "TEE binaries missing:$_missing"
+        fi
     fi
 
     [ "$ERRORS" -lt 0 ] && ERRORS=0
+    [ "$WARNINGS" -lt 0 ] && WARNINGS=0
+    [ "$TRIAGE" -lt 0 ] && TRIAGE=0
     set_prop of.boot_diag_errors "$ERRORS"
     set_prop of.boot_diag_warnings "$WARNINGS"
+    set_prop of.boot_diag_triage "$TRIAGE"
+    set_prop of.boot_diag_crypto "$(crypto_mode)"
     if [ "$ERRORS" -gt 0 ]; then
         set_prop of.boot_diag_state "error"
     elif [ "$WARNINGS" -gt 0 ]; then
@@ -358,28 +742,83 @@ classify() {
         set_prop of.boot_diag_state "ok"
     fi
     set_prop of.boot_diag_dir "$DIAG_ROOT"
+    save_state
+    return 0
 }
 
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
-cache_writable() {
-    [ "$NO_MIRROR" = 1 ] && return 1
-    [ -d "$CACHE_DIR" ] || mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
-    : > "$CACHE_DIR/.write_test" 2>/dev/null || return 1
-    rm -f "$CACHE_DIR/.write_test" 2>/dev/null
+mirror() {
+    [ "$(cache_state)" = "rw" ] || return 0
+    for _f in boot-diag.txt dmesg.txt logcat.txt services.txt mounts.txt \
+              props.txt encryption.txt errors.txt warnings.txt triage.txt \
+              crypto-errors.txt recovery-log.txt report.txt; do
+        [ -f "$DIAG_ROOT/$_f" ] && copy_redacted "$DIAG_ROOT/$_f" "$CACHE_DIR/$_f" 2>/dev/null
+    done
+    {
+        printf '%s\n' "Sakura boot diagnostics mirror"
+        printf '%s\n' "source : $DIAG_ROOT"
+        printf '%s\n' "created: $(now)"
+        printf '%s\n' "Every file here is a redacted copy. /tmp/recovery.log is private"
+        printf '%s\n' "and is not copied verbatim; recovery-log.txt is its sanitized copy."
+    } > "$CACHE_DIR/README.txt" 2>/dev/null
     return 0
 }
 
-mirror() {
-    cache_writable || return 0
-    for _f in boot-diag.txt dmesg.txt logcat.txt services.txt mounts.txt \
-              props.txt encryption.txt errors.txt; do
-        [ -f "$DIAG_ROOT/$_f" ] && cp -f "$DIAG_ROOT/$_f" "$CACHE_DIR/$_f" 2>/dev/null
-    done
-    printf '%s\n' "Sakura boot diagnostics mirror" \
-        "source: $DIAG_ROOT" > "$CACHE_DIR/README.txt" 2>/dev/null
-    return 0
+# ---------------------------------------------------------------------------
+# Boot stage evaluation (bounded; never blocks init)
+# ---------------------------------------------------------------------------
+required_services_ok() {
+    _rso_ok=0
+    _rso_seen=0
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        _n=$(printf '%s' "$_line" | awk '{print $1}')
+        _s=$(printf '%s' "$_line" | awk '{print $2}')
+        for _r in $REQUIRED_SERVICES; do
+            if [ "$_n" = "$_r" ]; then
+                _rso_seen=$((_rso_seen + 1))
+                [ "$_s" = "running" ] && _rso_ok=$((_rso_ok + 1))
+            fi
+        done
+    done < "$DIAG_ROOT/services.txt" 2>/dev/null
+    [ "$_rso_seen" -gt 0 ] && [ "$_rso_ok" = "$_rso_seen" ]
+}
+
+data_mounted() {
+    [ -n "$(mount_lookup /data)" ]
+}
+
+evaluate_stage() {
+    _st="early-boot"
+    if [ "$(prop twrp.decrypt.done)" = "true" ] || data_mounted; then
+        _st="data-ready"
+    elif [ "$(prop ro.crypto.state)" = "encrypted" ]; then
+        _st="decrypt-pending"
+    fi
+    if required_services_ok; then
+        [ "$_st" = "early-boot" ] && _st="services-ready"
+    fi
+    if have pidof && pidof recovery >/dev/null 2>&1; then
+        # The process exists. The pinned GUI keeps its "rendered" state in
+        # DataManager (tw_gui_done), which init cannot read, so this is reported
+        # as the GUI process, not as a rendered interface.
+        case "$_st" in
+            data-ready|decrypt-pending) _st="gui-process-up" ;;
+            *) _st="gui-process-up" ;;
+        esac
+        GUI_SEEN=1
+    fi
+    printf '%s\n' "$_st"
+}
+
+set_stage() { # set_stage <new stage> [reason]
+    [ "$BOOT_STAGE" = "$1" ] && return 0
+    BOOT_STAGE="$1"
+    set_prop of.boot_diag_stage "$BOOT_STAGE"
+    append_log boot-diag.txt init INFO "stage: $BOOT_STAGE${2:+ ($2)}"
+    save_state
 }
 
 # ---------------------------------------------------------------------------
@@ -387,42 +826,46 @@ mirror() {
 # ---------------------------------------------------------------------------
 cmd_collect() {
     ensure_root || { say "ERROR: cannot create $DIAG_ROOT"; return 1; }
-    collect_kernel
-    collect_logcat
-    collect_mounts
-    collect_services
-    collect_props
-    collect_encryption
-    classify
-    append_log boot-diag.txt diag INFO "snapshot complete: errors=$ERRORS warnings=$WARNINGS"
+    load_state
+    collect_all
+    append_log boot-diag.txt diag INFO \
+        "snapshot complete: errors=$ERRORS warnings=$WARNINGS triage=$TRIAGE"
     mirror
     return 0
 }
 
 cmd_boot() {
     ensure_root || { say "ERROR: cannot create $DIAG_ROOT"; return 1; }
-    BOOT_STAGE="early-boot"
-    [ "$NO_SETPROP" = 0 ] && set_prop of.boot_diag_ready 0
-    append_log boot-diag.txt init INFO "diagnostic collector started (pid $$)"
+    load_state
+    GUI_SEEN=0
+    [ -z "$BOOT_STAGE" ] && BOOT_STAGE="early-boot"
+    set_prop of.boot_diag_ready 0
+    set_prop of.boot_diag_stage "$BOOT_STAGE"
+    append_log boot-diag.txt init INFO \
+        "diagnostic collector started (pid $$, crypto mode $(crypto_mode))"
+    set_stage "early-boot" "collector started"
 
-    # First snapshot must happen before the GUI loads so the status-bar badge
-    # can be decided without a refresh race.
-    cmd_collect >/dev/null 2>&1
+    # First snapshot before the GUI loads, so the status-bar badge is decided
+    # before first paint.
+    collect_all
     set_prop of.boot_diag_ready 1
-    append_log boot-diag.txt init INFO "first snapshot done: errors=$ERRORS warnings=$WARNINGS"
+    append_log boot-diag.txt init INFO \
+        "first snapshot done: errors=$ERRORS warnings=$WARNINGS triage=$TRIAGE"
 
     _i=0
     while [ "$_i" -lt "$WATCH_ITERATIONS" ]; do
         sleep "$WATCH_INTERVAL" 2>/dev/null || break
         _i=$((_i + 1))
-        BOOT_STAGE="boot-watch"
         collect_services
         collect_mounts
+        collect_encryption
         classify >/dev/null 2>&1
+        set_stage "$(evaluate_stage)" "watch $_i"
         mirror
-        if have pidof && pidof recovery >/dev/null 2>&1; then
-            BOOT_STAGE="gui-up"
-            append_log boot-diag.txt gui INFO "recovery GUI detected after ${_i} interval(s)"
+        # Stop only when both the GUI process and the data state are settled.
+        if [ "${GUI_SEEN:-0}" = 1 ] \
+           && { data_mounted || [ "$(prop ro.crypto.state)" != "encrypted" ] \
+                || [ "$(prop twrp.decrypt.done)" = "true" ]; }; then
             break
         fi
     done
@@ -430,23 +873,32 @@ cmd_boot() {
     collect_kernel
     collect_logcat
     collect_props
+    collect_recovery_log
     collect_encryption
     classify
-    append_log boot-diag.txt init INFO "collector finished: stage=$BOOT_STAGE errors=$ERRORS warnings=$WARNINGS"
+    if [ "${GUI_SEEN:-0}" = 1 ]; then
+        set_stage "gui-process-up" "monitor finished"
+    elif [ "$_i" -ge "$WATCH_ITERATIONS" ] && [ "$_i" -gt 0 ]; then
+        set_stage "monitor-timeout" "bounded watch completed"
+    fi
+    append_log boot-diag.txt init INFO \
+        "collector finished: stage=$BOOT_STAGE errors=$ERRORS warnings=$WARNINGS triage=$TRIAGE"
     mirror
     return 0
 }
 
 cmd_report() {
     ensure_root || return 1
-    [ -f "$DIAG_ROOT/dmesg.txt" ] || cmd_collect >/dev/null 2>&1
-    # Recompute in this process: counters are shell variables, so a report run
-    # in a fresh process would otherwise print errors=0 no matter what the
-    # logs contain (found by the fixture test).
-    classify >/dev/null 2>&1
+    # A report runs in a fresh shell. Never recompute history: if a state file
+    # exists it is authoritative. Only an empty diagnostic directory triggers a
+    # one-shot collection.
+    if ! load_state; then
+        collect_all >/dev/null 2>&1
+        load_state
+        save_state
+    fi
     _stamp=$(date '+%Y%m%d-%H%M%S' 2>/dev/null || echo 0)
-    _dir="$DIAG_ROOT"
-    _out="$_dir/Sakura-Diagnostic-Report-$_stamp.txt"
+    _out="$DIAG_ROOT/Sakura-Diagnostic-Report-$_stamp.txt"
 
     {
         echo "Sakura OrangeFox R12 diagnostic report"
@@ -457,15 +909,19 @@ cmd_report() {
         echo "build:          $(prop ro.build.display.id)"
         echo "OrangeFox:      $(prop ro.orangefox.version) / TWRP $(prop ro.twrp.version)"
         echo "kernel:         $(uname -sr 2>/dev/null || echo unknown)"
-        echo "boot stage:     $BOOT_STAGE"
-        echo "serial:         $(prop ro.serialno)"
+        echo "crypto mode:    $(crypto_mode)"
+        echo "metadata enc:   $(metadata_mode)"
+        echo "boot stage:     ${BOOT_STAGE:-unknown}"
+        echo "classification: pass ${CLASSIFY_PASS}"
         echo "diagnostic dir: $DIAG_ROOT"
+        echo "cache mirror:   $(cache_state)"
         echo "errors:         $ERRORS"
         echo "warnings:       $WARNINGS"
+        echo "triage:         $TRIAGE (unclassified E/F lines, not counted)"
+        echo "service errors: $SERVICE_ERRORS"
         echo
-        echo "--- selected properties ---"
-        grep -E '^(ro\.product|ro\.build|ro\.hardware|ro\.crypto|ro\.boot|init\.svc|sys\.usb)' \
-            "$DIAG_ROOT/props.txt" 2>/dev/null | head -n 80 || echo "(none)"
+        echo "--- selected properties (sensitive values are never collected) ---"
+        head -n 80 "$DIAG_ROOT/props.txt" 2>/dev/null || echo "(none)"
         echo
         echo "--- services ---"
         cat "$DIAG_ROOT/services.txt" 2>/dev/null || echo "(none)"
@@ -476,61 +932,118 @@ cmd_report() {
         echo "--- encryption ---"
         cat "$DIAG_ROOT/encryption.txt" 2>/dev/null || echo "(none)"
         echo
-        echo "--- errors and warnings ---"
+        echo "--- critical errors ---"
         cat "$DIAG_ROOT/errors.txt" 2>/dev/null || echo "(none)"
+        echo
+        echo "--- warnings (recoverable) ---"
+        cat "$DIAG_ROOT/warnings.txt" 2>/dev/null || echo "(none)"
+        echo
+        echo "--- unclassified logcat errors (triage) ---"
+        head -n 60 "$DIAG_ROOT/triage.txt" 2>/dev/null || echo "(none)"
         echo
         echo "--- boot diagnostics (last 200 lines) ---"
         tail -n 200 "$DIAG_ROOT/boot-diag.txt" 2>/dev/null || echo "(none)"
     } | redact > "$_out" 2>/dev/null || return 1
 
     chmod 0640 "$_out" 2>/dev/null || true
-    # Stable alias for the GUI "View report" action: the timestamped file keeps
-    # history, report.txt always names the newest one.
-    cp -f "$_out" "$DIAG_ROOT/report.txt" 2>/dev/null || true
-    chmod 0640 "$DIAG_ROOT/report.txt" 2>/dev/null || true
+    # Stable alias for the GUI "View report" action: report.txt always names the
+    # newest one, the timestamped file keeps history.
+    copy_redacted "$_out" "$DIAG_ROOT/report.txt" 2>/dev/null || true
     say "$_out"
     return 0
 }
 
 cmd_export() {
     ensure_root || return 1
+    _want_sd=1
+    _want_cache=1
+    for _a in "$@"; do
+        case "$_a" in
+            --sdcard) _want_cache=0 ;;
+            --cache)  _want_sd=0 ;;
+        esac
+    done
     # Never run the bounded boot supervisor here: the GUI calls export from a
-    # worker thread with a progress dialog, and waiting up to 90 s would look
-    # like a hang. A one-shot snapshot is enough for an export.
+    # worker thread and a 90 s wait would look like a hang.
     [ -s "$DIAG_ROOT/boot-diag.txt" ] || cmd_collect >/dev/null 2>&1
     _report=$(cmd_report 2>/dev/null || true)
     _copied=0
+    _cache_state=$(cache_state)
 
-    if cache_writable; then
+    if [ "$_want_cache" = 1 ] && [ "$_cache_state" = "rw" ]; then
         for _f in "$DIAG_ROOT"/*.txt; do
             [ -f "$_f" ] || continue
-            cp -f "$_f" "$CACHE_DIR/" 2>/dev/null && _copied=1
+            copy_redacted "$_f" "$CACHE_DIR/$(basename "$_f")" 2>/dev/null && _copied=1
         done
-        printf '%s\n' "Logs copied by sakura-diag" \
+        printf '%s\n' "Logs copied by sakura-diag (redacted)" \
             "Retrieve with: adb pull $CACHE_DIR" > "$CACHE_DIR/README.txt" 2>/dev/null
     fi
 
-    # /sdcard only if it is already mounted and writable; never required and
-    # never mounted by this script.
-    if [ -d /sdcard ] && [ -w /sdcard ]; then
+    if [ "$_want_sd" = 1 ] && sdcard_writable; then
         mkdir -p "$SDCARD_DIR" 2>/dev/null
         for _f in "$DIAG_ROOT"/*.txt; do
             [ -f "$_f" ] || continue
-            cp -f "$_f" "$SDCARD_DIR/" 2>/dev/null && _copied=1
+            copy_redacted "$_f" "$SDCARD_DIR/$(basename "$_f")" 2>/dev/null && _copied=1
         done
     fi
 
     if [ "$_copied" = 1 ]; then
-        say "Diagnostics exported."
+        say "Diagnostics exported (redacted copies only)."
         say "  on-device : $DIAG_ROOT"
-        cache_writable && say "  persisted : $CACHE_DIR"
+        [ "$_cache_state" = "rw" ] && say "  persisted : $CACHE_DIR"
         [ -n "${_report:-}" ] && say "  report    : $_report"
+        set_prop of.boot_diag_last_copy "exported"
         return 0
     fi
 
     say "Logs are available only in tmpfs: $DIAG_ROOT"
-    say "Neither /cache nor /sdcard is writable (expected on encrypted, undecrypted /data)."
+    case "$_cache_state" in
+        unmounted)    say "/cache is not mounted; nothing was written outside tmpfs." ;;
+        read-only)    say "/cache is mounted read-only; nothing could be persisted." ;;
+        not-persistent) say "/cache resolves to a ramdisk filesystem; not a persistent copy." ;;
+        unwritable)   say "/cache is mounted but not writable." ;;
+        disabled)     say "persistence was disabled (SAKURA_DIAG_NO_MIRROR=1)." ;;
+    esac
     say "Retrieve them now with: adb pull $DIAG_ROOT"
+    set_prop of.boot_diag_last_copy "tmpfs-only"
+    return 0
+}
+
+cmd_copy() { # cmd_copy <log-name>
+    _name="${1:-}"
+    ensure_root || return 1
+    case "$_name" in
+        recovery)   _src="$DIAG_ROOT/recovery-log.txt" ;;
+        boot)       _src="$DIAG_ROOT/boot-diag.txt" ;;
+        errors)     _src="$DIAG_ROOT/errors.txt" ;;
+        warnings)   _src="$DIAG_ROOT/warnings.txt" ;;
+        triage)     _src="$DIAG_ROOT/triage.txt" ;;
+        dmesg)      _src="$DIAG_ROOT/dmesg.txt" ;;
+        logcat)     _src="$DIAG_ROOT/logcat.txt" ;;
+        services)   _src="$DIAG_ROOT/services.txt" ;;
+        mounts)     _src="$DIAG_ROOT/mounts.txt" ;;
+        encryption) _src="$DIAG_ROOT/encryption.txt" ;;
+        crypto)     _src="$DIAG_ROOT/crypto-errors.txt" ;;
+        report)     _src="$DIAG_ROOT/report.txt" ;;
+        *) say "usage: sakura-diag copy <recovery|boot|errors|warnings|triage|crypto|dmesg|logcat|services|mounts|encryption|report>"
+           return 2 ;;
+    esac
+    [ -f "$_src" ] || { say "Nothing to copy: $_src does not exist."; set_prop of.boot_diag_last_copy "missing $_name"; return 1; }
+
+    _dst=""
+    if sdcard_writable; then
+        _dst="$SDCARD_DIR/$(basename "$_src")"
+    elif [ "$(cache_state)" = "rw" ]; then
+        _dst="$CACHE_DIR/$(basename "$_src")"
+    fi
+    if [ -z "$_dst" ]; then
+        say "Neither /sdcard nor /cache is writable; the log stays in $_src."
+        set_prop of.boot_diag_last_copy "no-writable-storage"
+        return 0
+    fi
+    copy_redacted "$_src" "$_dst" || { say "Copy failed."; set_prop of.boot_diag_last_copy "copy failed"; return 1; }
+    say "Copied $_name to $_dst"
+    set_prop of.boot_diag_last_copy "copied $_name"
     return 0
 }
 
@@ -541,22 +1054,32 @@ cmd_clear() {
         say "Refusing to clear without --yes (the GUI asks for confirmation first)."
         return 2
     fi
-    [ -d "$DIAG_ROOT" ] || return 0
-    for _f in "$DIAG_ROOT"/*; do
-        [ -e "$_f" ] || continue
-        rm -rf "$_f" 2>/dev/null || true
+    # tmpfs session logs
+    if [ -d "$DIAG_ROOT" ]; then
+        for _f in "$DIAG_ROOT"/*; do
+            [ -e "$_f" ] || continue
+            rm -rf "$_f" 2>/dev/null || true
+        done
+    fi
+    # our own persistent copies, and nothing else
+    for _dir in "$CACHE_DIR" "$SDCARD_DIR"; do
+        [ -d "$_dir" ] || continue
+        for _f in "$_dir"/*; do
+            [ -e "$_f" ] || continue
+            rm -rf "$_f" 2>/dev/null || true
+        done
     done
     set_prop of.boot_diag_errors 0
     set_prop of.boot_diag_warnings 0
-    set_prop of.boot_diag_state "ok"
-    say "Diagnostic logs cleared."
+    set_prop of.boot_diag_triage 0
+    set_prop of.boot_diag_state "cleared"
+    say "Diagnostic logs cleared (this session, /cache mirror and /sdcard copies)."
     return 0
 }
 
 cmd_status() {
-    _n=$(prop of.boot_diag_errors)
-    [ -n "$_n" ] || _n=0
-    say "errors=$_n warnings=$(prop of.boot_diag_warnings) state=$(prop of.boot_diag_state) dir=$DIAG_ROOT"
+    load_state
+    say "errors=$ERRORS warnings=$WARNINGS triage=$TRIAGE state=$(prop of.boot_diag_state) stage=${BOOT_STAGE:-unknown} crypto=$(crypto_mode) cache=$(cache_state) dir=$DIAG_ROOT"
     return 0
 }
 
@@ -567,15 +1090,21 @@ usage: sakura-diag <command>
   boot      collect early-boot diagnostics (run by init; bounded watch loop)
   collect   take one snapshot and classify it
   report    write a redacted diagnostic report and print its path
-  export    copy logs to /cache/recovery/sakura-diag (and /sdcard if writable)
+  export [--sdcard|--cache]
+            copy redacted logs to the writable destinations
+  copy <log>
+            copy one redacted log (recovery|boot|errors|warnings|triage|dmesg|
+            logcat|services|mounts|encryption|report) to writable storage
   clear --yes
-            delete diagnostic logs (GUI confirms before calling this)
-  status    print the current error/warning counters
+            delete the session logs, the /cache mirror and /sdcard copies
+  status    print counters, stage, crypto mode and cache state
 
 Environment overrides (testing only): SAKURA_DIAG_ROOT, SAKURA_DIAG_CACHE,
-SAKURA_DIAG_SDCARD, SAKURA_DIAG_FIXTURES, SAKURA_DIAG_NO_SETPROP,
-SAKURA_DIAG_NO_MIRROR, SAKURA_DIAG_WATCH_ITERATIONS, SAKURA_DIAG_WATCH_INTERVAL,
-SAKURA_DIAG_MAX_BYTES, SAKURA_DIAG_MAX_ROTATIONS.
+SAKURA_DIAG_SDCARD, SAKURA_DIAG_MOUNTS, SAKURA_DIAG_RECOVERY_LOG,
+SAKURA_DIAG_FIXTURES, SAKURA_DIAG_CRYPTO_MODE, SAKURA_DIAG_NO_SETPROP,
+SAKURA_DIAG_NO_MIRROR, SAKURA_DIAG_WATCH_ITERATIONS,
+SAKURA_DIAG_WATCH_INTERVAL, SAKURA_DIAG_SERVICE_GRACE, SAKURA_DIAG_MAX_BYTES,
+SAKURA_DIAG_MAX_ROTATIONS.
 EOF
 }
 
@@ -587,6 +1116,7 @@ main() {
         collect) cmd_collect "$@" ;;
         report) cmd_report "$@" ;;
         export) cmd_export "$@" ;;
+        copy) cmd_copy "$@" ;;
         clear) cmd_clear "$@" ;;
         status) cmd_status "$@" ;;
         ""|-h|--help|help) usage ;;

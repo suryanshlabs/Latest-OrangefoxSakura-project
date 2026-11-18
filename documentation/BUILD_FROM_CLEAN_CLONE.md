@@ -86,7 +86,16 @@ Extract them once from **your own** stock firmware:
   SHA-256). All of that is gitignored.
 * To build *without* decryption for unrelated work:
   `SAKURA_ALLOW_MISSING_CRYPTO=1 ./build/run-all.sh` — the resulting image
-  cannot decrypt `/data` and must not be reported as doing so.
+  cannot decrypt `/data` and must not be reported as doing so. The script
+  records `ro.sakura.crypto.mode=none` so the boot diagnostics do not report the
+  absent TEE services as faults; a normal build records `full`.
+* To declare metadata encryption (FBEv2) — only meaningful on a ROM that
+  actually uses it, and **not usable on this kernel** (no `dm-default-key`, see
+  `ENCRYPTION.md` §6a):
+  `SAKURA_METADATA_ENCRYPTION=1 ./build/build.sh` adds
+  `metadata_encryption=`/`keydirectory=` to both `/data` rows and a `/metadata`
+  row. It is refused together with `SAKURA_ALLOW_MISSING_CRYPTO=1`. Inspect or
+  revert with `python3 tools/configure_metadata.py --check|--disable`.
 
 ## 4. What a PASS means — and what it does not
 

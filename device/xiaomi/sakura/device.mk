@@ -10,6 +10,26 @@
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.hardware.keystore=msm8953
 
+# Crypto mode, recorded at build time by build/build.sh.
+#
+# The early-boot diagnostics must be able to tell an intentional no-decryption
+# build (SAKURA_ALLOW_MISSING_CRYPTO=1: the TEE chain is not installed, so its
+# services cannot run) from a broken full build (the chain should be there).
+# build/build.sh writes crypto_mode.mk next to this file; a clean clone has
+# none, in which case the default is `full`.
+SAKURA_CRYPTO_MODE_MK := $(DEVICE_PATH)/crypto_mode.mk
+ifneq ($(wildcard $(SAKURA_CRYPTO_MODE_MK)),)
+include $(SAKURA_CRYPTO_MODE_MK)
+else
+PRODUCT_PROPERTY_OVERRIDES += ro.sakura.crypto.mode=full
+endif
+
+# Metadata encryption (FBEv2) is opt-in: tools/configure_metadata.py writes this
+# fragment only when a maintainer confirms the target ROM uses it. It also sets
+# BOARD_USES_METADATA_PARTITION := true (this file is parsed after
+# BoardConfig.mk, so the later value wins for the product config).
+-include $(DEVICE_PATH)/metadata_encryption.mk
+
 # NOTE: PRODUCT_SYSTEM_PROPERTY_BLACKLIST (used by the 2024 community tree) is
 # obsolete on a 12.1 base and is not used here. The timestamp props are simply
 # not referenced anywhere in this tree.

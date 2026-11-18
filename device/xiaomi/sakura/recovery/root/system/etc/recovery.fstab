@@ -10,10 +10,17 @@
 # pre-Android-11 vendor contents format). Inline crypto would be the separate
 # 'inlinecrypt' mount option. See documentation/ENCRYPTION.md sect. 3.
 #
-# NOT declared on purpose: metadata_encryption= / keydirectory=.
-# sakura's vendor is Keymaster 3.0 and neither available kernel has
-# dm-default-key, so metadata-encrypted /data cannot be handled. Declaring it
-# would produce a recovery that silently fails. See documentation/ENCRYPTION.md.
+# Metadata encryption (FBEv2) is deliberately NOT declared in this file.
+# The pinned recovery supports it (partition.cpp parses metadata_encryption=
+# and keydirectory=, and Android.mk compiles -DTW_INCLUDE_FBE_METADATA_DECRYPT
+# + libvold/MetadataCrypt whenever TW_INCLUDE_CRYPTO is on), but
+# Setup_Data_Partition() treats ANY non-empty key directory as "this /data is
+# encrypted": on a ROM without a metadata layer that is a false encryption
+# state and recovery would demand a credential for a plain /data. Every
+# inspected sakura ROM declares fileencryption=ice with no metadata layer.
+# Enabling it is an explicit build step (SAKURA_METADATA_ENCRYPTION=1 ->
+# tools/configure_metadata.py), which adds the two tokens to both /data rows
+# and a /metadata partition row. See documentation/ENCRYPTION.md section 6.
 #
 #<src>                                        <mnt_point> <type> <mnt_flags and options>                 <fs_mgr_flags>
 

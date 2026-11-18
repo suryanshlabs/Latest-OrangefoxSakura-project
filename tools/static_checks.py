@@ -293,6 +293,87 @@ def check_tooling():
            "vendor_blobs/, blob_install.mk and the installed blob dirs")
 
 
+def check_theme_selection():
+    """The build died inside Soong on theme selection; keep the inputs checked."""
+    script = os.path.join(ROOT, "build/check_theme_inputs.sh")
+    record("theme: preflight script exists and is executable",
+           os.path.isfile(script) and os.access(script, os.X_OK), "")
+    build = read("build/build.sh")
+    record("theme: build.sh runs the preflight before envsetup",
+           "check_theme_inputs.sh" in build
+           and build.index("check_theme_inputs.sh") < build.index(". build/envsetup.sh"),
+           "'Could not find ui.xml for TW_THEME: not set' names no real cause")
+    board = read("device/xiaomi/sakura/BoardConfig.mk")
+    record("theme: BoardConfig sets TW_THEME",
+           "TW_THEME := portrait_hdpi" in board, "")
+    record("theme: BoardConfig sets the resolution fallback",
+           "TARGET_SCREEN_WIDTH := 1080" in board
+           and "TARGET_SCREEN_HEIGHT := 2280" in board,
+           "determineTheme() falls back to this when the Soong var is empty")
+    record("theme: BoardConfig includes the twrpVarsPlugin exporter",
+           "include vendor/twrp/config/BoardConfigSoong.mk" in board, "")
+
+
+def check_crypto_modes():
+    """The build must record its crypto mode, and metadata mode must be opt-in."""
+    device = read("device/xiaomi/sakura/device.mk")
+    record("crypto: device.mk records ro.sakura.crypto.mode",
+           "crypto_mode.mk" in device
+           and "ro.sakura.crypto.mode=full" in device,
+           "the collector distinguishes a no-decryption build from a broken one")
+    record("crypto: device.mk includes the metadata fragment with -include",
+           "-include $(DEVICE_PATH)/metadata_encryption.mk" in device, "")
+
+    build = read("build/build.sh")
+    record("crypto: build.sh writes crypto_mode.mk and resets metadata mode",
+           "crypto_mode.mk" in build and "configure_metadata.py" in build
+           and "--disable" in build, "")
+    record("crypto: metadata mode refuses to combine with no-TEE builds",
+           'CRYPTO_MODE" = "full"' in build, "")
+
+    verify = read("build/verify_image.sh")
+    record("crypto: verify_image.sh checks the recorded crypto mode",
+           "ro.sakura.crypto.mode" in verify, "")
+    record("crypto: verify_image.sh checks metadata consistency",
+           "metadata_encryption=aes-256-xts" in verify
+           and "keydirectory=" in verify, "")
+
+    gi = read(".gitignore")
+    record("crypto: generated mode fragments are gitignored",
+           "device/xiaomi/sakura/crypto_mode.mk" in gi
+           and "device/xiaomi/sakura/metadata_encryption.mk" in gi, "")
+
+    tool = os.path.join(ROOT, "tools/configure_metadata.py")
+    record("crypto: metadata configuration tool is executable",
+           os.path.isfile(tool) and os.access(tool, os.X_OK), "")
+    record("crypto: neither generated fragment is committed",
+           not os.path.exists(os.path.join(
+               ROOT, "device/xiaomi/sakura/metadata_encryption.mk"))
+           and not os.path.exists(os.path.join(
+               ROOT, "device/xiaomi/sakura/crypto_mode.mk")), "")
+
+
+# The features Part 3 requires of the Error Logs UI, as strings that must be
+# present in the shipped theme patch.
+DIAG_GUI_FEATURES = {
+    "recovery.log viewer (sanitized copy)": "recovery-log.txt",
+    "boot/init log viewer": "boot-diag.txt",
+    "errors-only filter view": "errors.txt",
+    "warnings-only filter view": "warnings.txt",
+    "unclassified (triage) view": "triage.txt",
+    "TEE/crypto filter view": "crypto-errors.txt",
+    "kernel log viewer": "dmesg.txt",
+    "logcat viewer": "logcat.txt",
+    "service status viewer": "services.txt",
+    "mount status viewer": "mounts.txt",
+    "encryption diagnostics viewer": "encryption.txt",
+    "diagnostic report viewer": "report.txt",
+    "copy selected logs": "sakura-diag copy ",
+    "export": "sakura-diag export",
+    "clear with confirmation": "sakura-diag clear --yes",
+}
+
+
 def check_diagnostics():
     """The early-boot collector and its GUI patch must be wired end to end."""
     script = "device/xiaomi/sakura/recovery/root/system/bin/sakura-diag"
@@ -313,6 +394,10 @@ def check_diagnostics():
         record("diag: service declared and started on boot",
                "service sakura_diag /system/bin/sakura-diag" in text
                and "start sakura_diag" in text, "")
+        record("diag: badge default properties are set by init",
+               "setprop of.boot_diag_errors 0" in text
+               and "setprop of.boot_diag_state idle" in text,
+               "an unset property must never light the badge")
 
     qcom = read("device/xiaomi/sakura/recovery/root/init.recovery.qcom.rc")
     record("diag: device init imports the diagnostic fragment",
@@ -323,6 +408,21 @@ def check_diagnostics():
            "recovery/root/system/bin/sakura-diag:recovery/root/system/bin/sakura-diag" in dev
            and "recovery/root/init.recovery.sakura_diag.rc:recovery/root/init.recovery.sakura_diag.rc" in dev,
            "the pinned trees do not copy recovery/root automatically")
+
+    if os.path.isfile(path):
+        body = read(script)
+        record("diag: /cache persistence is proven from /proc/mounts",
+               "mount_lookup" in body and "not-persistent" in body,
+               "a directory in the ramdisk must never look persistent")
+        record("diag: state file keeps counters across processes",
+               "save_state" in body and "load_state" in body,
+               "the GUI runs `report` in a new shell")
+        record("diag: crypto mode is read from the build property",
+               "ro.sakura.crypto.mode" in body, "")
+        record("diag: collector does not claim /cache is /data/cache",
+               "/data/cache" not in body, "")
+        record("diag: unknown logcat errors are kept in triage, not counted",
+               "triage.txt" in body and "BENIGN_LOGCAT_TAGS" in body, "")
 
     try:
         patch = read("patches/0001-theme-sakura-diagnostics.patch")
@@ -335,6 +435,13 @@ def check_diagnostics():
     record("diag: theme patch only uses existing GUI actions",
            'function="cmd"' in patch and 'function="page"' in patch
            and 'function="set"' in patch, "cmd/set/page exist in the pinned GUI")
+    missing = [name for name, needle in DIAG_GUI_FEATURES.items()
+               if needle not in patch]
+    record("diag: Error Logs UI covers every required feature", not missing,
+           ", ".join(missing) if missing else f"{len(DIAG_GUI_FEATURES)} features")
+    record("diag: badge opens Error Logs instead of claiming a live state",
+           'var1="property.of.boot_diag_errors" op="!=" var2="0"' in patch
+           and "not a live indicator" in patch, "")
 
 
 def check_patches():
@@ -367,8 +474,20 @@ def check_patches():
 def check_docs():
     for rel in ("documentation/BUILD_FROM_CLEAN_CLONE.md",
                 "documentation/DIAGNOSTICS.md",
-                "documentation/BUG_AUDIT.md"):
+                "documentation/BUG_AUDIT.md",
+                "documentation/ENCRYPTION.md",
+                "documentation/TEST_REPORT.md",
+                "documentation/KNOWN_ISSUES.md"):
         record(f"docs: {rel} exists", os.path.isfile(os.path.join(ROOT, rel)), "")
+
+    diag = read("documentation/DIAGNOSTICS.md")
+    record("docs: DIAGNOSTICS no longer claims /cache is /data/cache",
+           "/data/cache" not in diag, "")
+    record("docs: DIAGNOSTICS documents the mount-checked persistence",
+           "not-persistent" in diag or "mounted read-write" in diag, "")
+    enc = read("documentation/ENCRYPTION.md")
+    record("docs: ENCRYPTION documents the opt-in metadata mode",
+           "metadata_encryption" in enc and "SAKURA_METADATA_ENCRYPTION" in enc, "")
     try:
         readme = read("README.md")
         deps = read("documentation/DEPENDENCIES.md")
@@ -552,6 +671,8 @@ def main(argv):
     check_manifest()
     check_tooling()
     check_diagnostics()
+    check_theme_selection()
+    check_crypto_modes()
     check_patches()
     check_crypto_blobs()
     check_docs()

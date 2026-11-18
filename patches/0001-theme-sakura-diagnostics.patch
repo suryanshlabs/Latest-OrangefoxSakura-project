@@ -1,41 +1,59 @@
 diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
-index 7c64c5a..452f887 100644
+index 7c64c5a..9c2b2af 100644
 --- a/gui/theme/common/languages/en.xml
 +++ b/gui/theme/common/languages/en.xml
-@@ -1266,5 +1266,27 @@
+@@ -1266,5 +1266,45 @@
  		<string name="listbox_group_dynamic_part">Dynamic partitions</string>
  		<string name="listbox_group_additions">Additions</string>
  		<string name="partitions_management">Partitions Management</string>
-+		<!-- sakura: Error Logs / boot diagnostics -->
 +		<string name="diag_hdr">Error Logs</string>
-+		<string name="diag_note">Boot diagnostics are collected before the GUI starts. If recovery never reaches this screen, retrieve them with: adb pull /tmp/sakura-diag</string>
-+		<string name="diag_view_recovery">View recovery.log</string>
-+		<string name="diag_view_boot">View boot/init diagnostics</string>
-+		<string name="diag_view_errors">View only errors and warnings</string>
-+		<string name="diag_view_dmesg">View kernel log (dmesg)</string>
-+		<string name="diag_view_logcat">View logcat</string>
-+		<string name="diag_view_services">View service status</string>
-+		<string name="diag_view_encryption">View mounts and encryption status</string>
++		<string name="diag_note">Boot diagnostics are collected before the GUI starts, so a failure that happens earlier still leaves evidence. If recovery never reaches this screen, retrieve them with: adb pull /tmp/sakura-diag</string>
++		<string name="diag_privacy">All logs shown here are redacted copies: serial numbers, IMEI/MEID, MAC addresses, PINs, passwords, tokens and key material are removed when they are collected. /tmp/recovery.log itself is never modified.</string>
++		<string name="diag_view_recovery">Recovery log (sanitized copy)</string>
++		<string name="diag_view_boot">Boot / init diagnostics</string>
++		<string name="diag_view_errors">Errors only (critical)</string>
++		<string name="diag_view_warnings">Warnings only (recoverable)</string>
++		<string name="diag_view_triage">Unclassified log messages</string>
++		<string name="diag_view_crypto">Encryption / TEE messages only</string>
++		<string name="diag_view_dmesg">Kernel log (dmesg)</string>
++		<string name="diag_view_logcat">Logcat</string>
++		<string name="diag_view_services">Service status</string>
++		<string name="diag_view_mounts">Mount status</string>
++		<string name="diag_view_encryption">Encryption diagnostics</string>
++		<string name="diag_view_report">View diagnostic report</string>
 +		<string name="diag_generate_report">Generate diagnostic report</string>
 +		<string name="diag_report_hdr">Diagnostic report</string>
-+		<string name="diag_report_body">A redacted report was written to /tmp/sakura-diag/report.txt. It is also copied to /cache/recovery/sakura-diag/ when /cache is writable. Wait a moment, then open it below.</string>
-+		<string name="diag_view_report">View report</string>
-+		<string name="diag_export">Copy / export diagnostic logs</string>
++		<string name="diag_report_body">A redacted report was written to /tmp/sakura-diag/report.txt (and to /cache/recovery/sakura-diag/ when /cache is mounted read-write). Open it below.</string>
++		<string name="diag_copy_hdr">Copy logs</string>
++		<string name="diag_copy_body">Copies one redacted log to /sdcard/Fox/diag/, or to /cache/recovery/sakura-diag/ when internal storage is not available. Nothing is copied verbatim; no /data is touched.</string>
++		<string name="diag_copy_status">Last copy:</string>
++		<string name="diag_copy_recovery">Copy recovery log</string>
++		<string name="diag_copy_boot">Copy boot / init log</string>
++		<string name="diag_copy_errors">Copy errors</string>
++		<string name="diag_copy_warnings">Copy warnings</string>
++		<string name="diag_copy_triage">Copy unclassified messages</string>
++		<string name="diag_copy_dmesg">Copy kernel log</string>
++		<string name="diag_copy_logcat">Copy logcat</string>
++		<string name="diag_copy_services">Copy service status</string>
++		<string name="diag_copy_mounts">Copy mount status</string>
++		<string name="diag_copy_encryption">Copy encryption status</string>
++		<string name="diag_export">Export all logs</string>
 +		<string name="diag_export_hdr">Diagnostics exported</string>
-+		<string name="diag_export_body">Logs stay in /tmp/sakura-diag. They are also copied to /cache/recovery/sakura-diag/ when /cache is writable, and to /sdcard/Fox/diag/ when internal storage is already mounted. Retrieve with: adb pull /cache/recovery/sakura-diag</string>
++		<string name="diag_export_body">Redacted copies are in /cache/recovery/sakura-diag/ when /cache is mounted read-write, and in /sdcard/Fox/diag/ when internal storage is mounted. Otherwise they stay in /tmp/sakura-diag. Retrieve with: adb pull /cache/recovery/sakura-diag</string>
 +		<string name="diag_clear">Clear diagnostic logs</string>
 +		<string name="diag_clear_hdr">Clear diagnostic logs?</string>
-+		<string name="diag_clear_body">This deletes the collected boot diagnostics, kernel log, logcat and reports. It does not touch /data, /cache or any other partition. The recovery log itself is not deleted.</string>
++		<string name="diag_clear_body">This deletes this session's log copies in /tmp/sakura-diag, the /cache/recovery/sakura-diag mirror and /sdcard/Fox/diag. It does not touch /data, any partition or /tmp/recovery.log.</string>
 +		<string name="diag_clear_yes">Yes, clear diagnostic logs</string>
 +		<string name="diag_clear_no">No, keep them</string>
++		<string name="diag_back">Back</string>
  	</resources>
  </language>
 diff --git a/gui/theme/portrait_hdpi/pages/diag.xml b/gui/theme/portrait_hdpi/pages/diag.xml
 new file mode 100644
-index 0000000..ba3b9f3
+index 0000000..aadb262
 --- /dev/null
 +++ b/gui/theme/portrait_hdpi/pages/diag.xml
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,392 @@
 +<?xml version="1.0"?>
 +<recovery>
 +	<pages>
@@ -44,14 +62,32 @@ index 0000000..ba3b9f3
 +
 +			Pure theme XML on purpose. Every action used here already exists in
 +			the pinned bootable/recovery at 8d2aad19:
-+			  * `cmd`    runs a shell command in a worker thread (gui/action.cpp),
-+			  * `set`    sets a persistent GUI variable,
++			  * `cmd`    runs a shell command in a worker thread (gui/action.cpp
++			             "These actions will run in a separate thread"),
++			  * `set`    sets a GUI variable,
 +			  * `page`   switches pages,
-+			  * `cat_file` (files.xml) renders a file in a scrollable textbox
-+			    via of_file_to_read; it refuses files larger than 1.5 MiB and
-+			    sakura-diag caps every log at 256 KiB.
++			  * `reload` re-renders the current page,
++			  * `property.<name>` is resolved by DataManager::GetValue()
++			             (data.cpp:442/523), so `%property.of.…%` and
++			             `<condition var1="property.of.…">` read what
++			             `/system/bin/sakura-diag` sets with setprop,
++			  * `fileexists` conditions stat a path, and
++			  * a listbox with `<data name="of_file_to_read"/>` renders a file
++			             (gui/listbox.cpp:340 ReadFileToList; 1.5 MiB limit,
++			             and sakura-diag caps every log at 256 KiB).
 +			No C++ modification is required, so this is shipped as a theme patch
 +			(patches/0001-theme-sakura-diagnostics.patch) rather than a fork.
++
++			Log files (all redacted at collection time):
++			  recovery-log.txt   sanitized copy of /tmp/recovery.log (the
++			                     original is never modified or shown here)
++			  boot-diag.txt      timestamped collector trail
++			  errors.txt         critical only
++			  warnings.txt       recoverable (avc, mmc timeout, benign tags)
++			  triage.txt         unclassified logcat E/F lines (not counted)
++			  crypto-errors.txt  TEE / crypto / mount filters
++			  dmesg.txt logcat.txt services.txt mounts.txt encryption.txt
++			  report.txt         newest redacted report
 +		-->
 +		<page name="error_logs">
 +			<listbox style="group_list">
@@ -60,44 +96,88 @@ index 0000000..ba3b9f3
 +
 +				<listitem name="{@diag_view_recovery}">
 +					<icon res="bs_btn_set_about"/>
-+					<action function="set">tw_filename1=/tmp/recovery.log</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_filename1=/tmp/sakura-diag/recovery-log.txt</action>
++					<action function="set">tw_diag_log={@diag_view_recovery}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_boot}">
 +					<icon res="bs_btn_set_about"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/boot-diag.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_boot}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_errors}">
 +					<icon res="icon_warning"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/errors.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_errors}</action>
++					<action function="page">diag_view</action>
++				</listitem>
++				<listitem name="{@diag_view_warnings}">
++					<icon res="icon_warning"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/warnings.txt</action>
++					<action function="set">tw_diag_log={@diag_view_warnings}</action>
++					<action function="page">diag_view</action>
++				</listitem>
++				<listitem name="{@diag_view_triage}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/triage.txt</action>
++					<action function="set">tw_diag_log={@diag_view_triage}</action>
++					<action function="page">diag_view</action>
++				</listitem>
++				<listitem name="{@diag_view_crypto}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/crypto-errors.txt</action>
++					<action function="set">tw_diag_log={@diag_view_crypto}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_dmesg}">
 +					<icon res="bs_btn_set_about"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/dmesg.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_dmesg}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_logcat}">
 +					<icon res="bs_btn_set_about"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/logcat.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_logcat}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_services}">
 +					<icon res="bs_btn_set_about"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/services.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_services}</action>
++					<action function="page">diag_view</action>
++				</listitem>
++				<listitem name="{@diag_view_mounts}">
++					<icon res="bs_btn_set_about"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/mounts.txt</action>
++					<action function="set">tw_diag_log={@diag_view_mounts}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +				<listitem name="{@diag_view_encryption}">
 +					<icon res="bs_btn_set_about"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/encryption.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_encryption}</action>
++					<action function="page">diag_view</action>
 +				</listitem>
 +
++				<!-- The report only appears once it exists, so a tap can never
++				     open an empty viewer. -->
++				<listitem name="{@diag_view_report}">
++					<icon res="bs_btn_set_about"/>
++					<condition var1="fileexists" var2="/tmp/sakura-diag/report.txt"/>
++					<action function="set">tw_filename1=/tmp/sakura-diag/report.txt</action>
++					<action function="set">tw_diag_log={@diag_view_report}</action>
++					<action function="page">diag_view</action>
++				</listitem>
 +				<listitem name="{@diag_generate_report}">
 +					<icon res="bs_btn_set_custom"/>
 +					<action function="cmd">/system/bin/sakura-diag report</action>
 +					<action function="page">error_logs_report</action>
++				</listitem>
++				<listitem name="{@diag_copy_hdr}">
++					<icon res="bs_btn_restore"/>
++					<action function="page">error_logs_copy</action>
 +				</listitem>
 +				<listitem name="{@diag_export}">
 +					<icon res="bs_btn_restore"/>
@@ -134,6 +214,56 @@ index 0000000..ba3b9f3
 +			</action>
 +		</page>
 +
++		<!--
++			Log viewer. Same listbox/textbox + of_file_to_read mechanism as the
++			stock cat_file page, but back returns to Error Logs instead of the
++			file manager, and the variable is cleared so the file is released.
++		-->
++		<page name="diag_view">
++			<action>
++				<action function="set">of_file_to_read=%tw_filename1%</action>
++			</action>
++
++			<listbox style="textbox">
++				<font resource="fixed" spacing="1" color="%text%"/>
++				<placement x="%col1_x%" y="%ab_ex_h%" w="%console_width%" h="%fileselector_terminal_height%"/>
++				<data name="of_file_to_read"/>
++			</listbox>
++
++			<template name="base_ex"/>
++
++			<animation>
++				<condition var1="tw_busy" var2="1"/>
++				<placement x="%progressbar_x%" y="%progressbar_y%"/>
++				<resource name="progress"/>
++				<speed fps="30" render="2"/>
++				<loop frame="1"/>
++			</animation>
++
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>%tw_diag_log%</text>
++			</text>
++
++			<text style="text_ab_subtitle_lim">
++				<placement x="%col1_x%" y="%row1_2_y%"/>
++				<text>%tw_filename1%</text>
++			</text>
++
++			<template name="gestures"/>
++
++			<action>
++				<touch key="back"/>
++				<action function="set">of_file_to_read=</action>
++				<action function="page">error_logs</action>
++			</action>
++			<action>
++				<touch key="home"/>
++				<action function="set">of_file_to_read=</action>
++				<action function="page">main</action>
++			</action>
++		</page>
++
 +		<page name="error_logs_report">
 +			<template name="base"/>
 +			<text style="text_ab_title">
@@ -149,8 +279,14 @@ index 0000000..ba3b9f3
 +				<iconsize w="216" h="168" padding="24"/>
 +				<listitem name="{@diag_view_report}">
 +					<icon res="bs_btn_set_about"/>
++					<condition var1="fileexists" var2="/tmp/sakura-diag/report.txt"/>
 +					<action function="set">tw_filename1=/tmp/sakura-diag/report.txt</action>
-+					<action function="page">cat_file</action>
++					<action function="set">tw_diag_log={@diag_view_report}</action>
++					<action function="page">diag_view</action>
++				</listitem>
++				<listitem name="{@diag_back}">
++					<icon res="bs_btn_set_about"/>
++					<action function="page">error_logs</action>
 +				</listitem>
 +			</listbox>
 +			<template name="gestures"/>
@@ -175,6 +311,96 @@ index 0000000..ba3b9f3
 +				<text>{@diag_export_body}</text>
 +			</text>
 +			<template name="gestures"/>
++			<action>
++				<touch key="back"/>
++				<action function="page">error_logs</action>
++			</action>
++			<action>
++				<touch key="home"/>
++				<action function="page">main</action>
++			</action>
++		</page>
++
++		<!--
++			Copy one redacted log to writable storage. `cmd` runs in a worker
++			thread, so the status line shows the result of the copy that was
++			requested last (of.boot_diag_last_copy, set by sakura-diag).
++		-->
++		<page name="error_logs_copy">
++			<listbox style="group_list">
++				<placement x="0" y="%ab_h%" w="%screen_w%" h="%bl_fullscreen_h%"/>
++				<iconsize w="216" h="168" padding="24"/>
++				<listitem name="{@diag_copy_recovery}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy recovery</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_boot}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy boot</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_errors}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy errors</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_warnings}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy warnings</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_triage}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy triage</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_dmesg}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy dmesg</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_logcat}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy logcat</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_services}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy services</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_mounts}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy mounts</action>
++					<action function="reload"/>
++				</listitem>
++				<listitem name="{@diag_copy_encryption}">
++					<icon res="bs_btn_restore"/>
++					<action function="cmd">/system/bin/sakura-diag copy encryption</action>
++					<action function="reload"/>
++				</listitem>
++			</listbox>
++
++			<template name="base"/>
++
++			<text style="text_ab_title">
++				<placement x="%col1_x_indent%" y="%ab_bc_y%"/>
++				<text>{@diag_copy_hdr}</text>
++			</text>
++
++			<text style="caption">
++				<placement x="%col1_x_indent%" y="%row1_2_y%" w="%console_width%"/>
++				<text>{@diag_copy_body}</text>
++			</text>
++
++			<text style="text_body1">
++				<placement x="%col1_x_indent%" y="%row2_2_y%" w="%console_width%"/>
++				<text>{@diag_copy_status} %property.of.boot_diag_last_copy%</text>
++			</text>
++
++			<template name="gestures"/>
++
 +			<action>
 +				<touch key="back"/>
 +				<action function="page">error_logs</action>
@@ -213,6 +439,10 @@ index 0000000..ba3b9f3
 +				<touch key="back"/>
 +				<action function="page">error_logs</action>
 +			</action>
++			<action>
++				<touch key="home"/>
++				<action function="page">main</action>
++			</action>
 +		</page>
 +	</pages>
 +</recovery>
@@ -232,23 +462,25 @@ index db82784..53b68fb 100644
  					<icon res="bs_btn_set_about"/>
  					<action function="page">about</action>
 diff --git a/gui/theme/portrait_hdpi/pages/templates/statusbar.xml b/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
-index 4cb1f75..349b4c2 100644
+index 4cb1f75..3c461c3 100644
 --- a/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
 +++ b/gui/theme/portrait_hdpi/pages/templates/statusbar.xml
-@@ -2,6 +2,25 @@
+@@ -2,6 +2,27 @@
  <recovery>
  	<templates>
  		<template name="statusbarinfo">
 +			<!--
 +				sakura: boot diagnostic badge. Hidden unless the early-boot
-+				collector counted a real error (property.of_* is resolved through
-+				DataManager::GetValue, which supports the `property.` prefix).
-+				Tapping it opens Settings -> Error Logs. Optional HALs are excluded
-+				from the count by sakura-diag, so their absence never lights it.
++				collector counted a real, actionable error (of.boot_diag_errors is
++				set to 0 by init.recovery.sakura_diag.rc before the GUI exists, so an
++				unset property can never light it). Required-service absence within
++				the grace period, optional HALs and unclassified logcat errors are
++				deliberately not counted, so this is not a "something logged an E"
++				badge. Tapping it opens Settings -> Error Logs. The condition is
++				evaluated when the page renders: it is not a live indicator.
 +			-->
 +			<text style="text_status">
 +				<condition var1="property.of.boot_diag_errors" op="!=" var2="0"/>
-+				<condition var1="property.of.boot_diag_errors" op="!=" var2=""/>
 +				<placement x="756" y="%status_info_y%"/>
 +				<text>! DIAG</text>
 +			</text>

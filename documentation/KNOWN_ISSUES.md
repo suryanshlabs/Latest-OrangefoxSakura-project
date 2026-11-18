@@ -3,19 +3,32 @@
 Severity: **blocker** (cannot ship), **high** (functional gap), **medium**
 (needs verification), **info**.
 
-## KI-1 — Metadata encryption is not supportable (high, architectural)
+## KI-1 — Metadata encryption: wired, but not usable on this kernel (high, architectural)
 
-`sakura`'s vendor is Keymaster 3.0 and **neither** available kernel
-(stock 3.18.120 nor the 4.9.278 candidate) contains `dm-default-key`
-(measured). Metadata-encrypted `/data` therefore cannot be mounted/decrypted by
-any single sakura R12 build.
+The recovery's metadata path is **already compiled into the image**
+(`-DTW_INCLUDE_FBE_METADATA_DECRYPT`, `libvold`/`MetadataCrypt`, and
+`partition.cpp` parsing `metadata_encryption=`/`keydirectory=`), and this tree now
+ships an explicit, reversible opt-in configuration
+(`tools/configure_metadata.py`, `SAKURA_METADATA_ENCRYPTION=1`; see
+`ENCRYPTION.md` §6a).
 
-*Impact:* Android 10+ ROMs that encrypt metadata will show an unmountable
-`/data` until "Format Data" (data loss) or a first boot without encryption.
-*Mitigation:* documented as a limitation; no false advertising.
-*Fix path:* requires a `dm-default-key` backport to 4.9 **and** a KM4/KeyMint
-storage-key provider on the vendor — not available on this firmware. Research
-project, not a build flag.
+What blocks real support is not configuration: `sakura`'s vendor is Keymaster 3.0
+and **neither** available kernel (stock 3.18.120 nor the 4.9.278 candidate)
+contains `dm-default-key` (measured — `KERNEL_ANALYSIS.md` §2/§3). Without that
+device-mapper target the metadata device cannot be mapped, so a metadata-encrypted
+`/data` cannot be decrypted by any build of this tree.
+
+*Impact:* Android 10+ ROMs that encrypt metadata will show an unmountable `/data`
+until "Format Data" (data loss). In practice every inspected sakura fstab
+(`LOS 18.1/20/21/22.x`) uses `fileencryption=ice` with no metadata layer, and the
+default build declares no metadata tokens, so this does not regress those ROMs.
+*Mitigation:* default off; the fstab comment explains why a non-empty
+`keydirectory=` is dangerous here (it makes recovery treat a plain `/data` as
+encrypted); diagnostics report the crypto mode so an intentional no-crypto build
+is not mistaken for a fault.
+*Fix path:* a `dm-default-key` backport to 4.9 (or a kernel that has it) plus a
+KM4/KeyMint storage-key provider on the vendor. Research project, not a build
+flag — and any claim of metadata decryption before that is false.
 
 ## KI-2 — Kernel provenance is not attributable (high, release blocker)
 
@@ -167,10 +180,33 @@ Theme conditions are evaluated when a page renders. The collector sets
 error discovered later appears on the next page load; there is no forced
 redraw. Do not describe the badge as a live indicator.
 
-## KI-15 — `/cache` mirror depends on decryption (medium)
+## KI-15 — `/cache` mirror is best-effort (medium)
 
-`/cache` is `/data/cache`. On an encrypted, undecrypted device the failed-boot
-logs exist only in `/tmp/sakura-diag` and are lost on reboot. adbd is started
-early (`sys.usb.config=adb`), which is the retrieval path that always works
-while the device is still in recovery. This is a platform constraint, not a
-missing feature; the collector never mounts `/data` to work around it.
+`/cache` is a **separate ext4 partition** (`by-name/cache -> /cache` in
+`recovery.fstab`), not `/data/cache`; earlier revisions of this document said the
+latter, which was wrong and is corrected here.
+
+The collector mirrors diagnostics into `/cache/recovery/sakura-diag` **only** when
+`/proc/mounts` proves a real, read-write, non-ramdisk filesystem is mounted at or
+above `/cache`. If the partition is absent, read-only or ramdisk-backed, nothing
+is written and `cache=` in `status` says why (`unmounted`, `read-only`,
+`not-persistent`, `unwritable`). Never mounting `/data` to fake persistence is a
+deliberate constraint.
+
+Consequence: after a reboot with no writable `/cache`, the failed-boot logs are
+gone. adbd (started early via `sys.usb.config=adb`) is the retrieval path that
+works while the device is still in recovery.
+
+## KI-16 — No build has completed end to end (blocker)
+
+Every CI run so far stopped before compiling recovery code: five runs died at
+Soong's theme selection (`Could not find ui.xml for TW_THEME: not set`), one later
+run died sourcing `build/envsetup.sh` (`exit status: 1`). Both paths are now
+guarded (`build/check_theme_inputs.sh`, `BUG-17`; and the envsetup block in
+`build/build.sh` runs with `set +u`, keeps the log and dies with the status), but
+**no run has yet produced an image**.
+
+What cannot be claimed until one does: that the theme resolves through
+`soong.variables`, that the patched theme compiles, that the ramdisk contains the
+diagnostics files, and that `verify_image.sh` passes on a real image. This
+document and `TEST_REPORT.md` say so explicitly.

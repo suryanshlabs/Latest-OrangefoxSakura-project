@@ -33,7 +33,8 @@
 | Internal storage mounts | not tested |  |
 | External storage (microSD) | not tested |  |
 | Partitions detected correctly | not tested |  |
-| **Diagnostics** (badge, Error Logs viewers, report/export) | not tested | requires a booted image; logic is covered by tests/test_diag.py |
+| **Diagnostics** (badge, Error Logs viewers, filters, copy, export, clear) | not tested | requires a booted image; logic is covered by tests/test_diag.py + tests/test_patches.py |
+| **Metadata encryption opt-in** (`SAKURA_METADATA_ENCRYPTION=1`) | not tested, and **cannot work on this kernel** | no `dm-default-key` in either kernel; configuration is covered by tests/test_metadata.py |
 | **Decryption** | not tested | requires genuine sakura blobs (0/20 present), built/verified image, matching on-disk format, and device evidence |
 | Backup | not tested |  |
 | Restore | not tested |  |

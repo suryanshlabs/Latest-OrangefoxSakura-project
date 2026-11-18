@@ -171,6 +171,38 @@ else
     echo "  [warn] encryptable=footer not found (Android 9 FDE ROMs unsupported)"
 fi
 
+# --- crypto mode / metadata mode must be explicit in the ramdisk ----------
+# The diagnostics read ro.sakura.crypto.mode to tell an intentional
+# no-decryption build from a broken one. It is written by build/build.sh into
+# crypto_mode.mk and ends up in the ramdisk property files.
+echo "==> crypto mode"
+if grep -rqs 'ro.sakura.crypto.mode=' "$TMP/rd" 2>/dev/null; then
+    MODE=$(grep -rhs -m1 'ro.sakura.crypto.mode=' "$TMP/rd" 2>/dev/null | head -1)
+    ok "crypto mode recorded ($MODE)"
+    case "$MODE" in
+        *mode=none*)
+            if [ "$REQUIRE_CRYPTO" = 1 ]; then
+                bad "image says crypto mode none but was verified with --require-crypto"
+            else
+                echo "  [info] intentional no-decryption build"
+            fi
+            ;;
+    esac
+else
+    bad "ro.sakura.crypto.mode missing: the diagnostics cannot tell a no-decryption build from a broken one"
+fi
+
+if grep -qhs 'metadata_encryption=aes-256-xts' "$TMP/fstab_active" 2>/dev/null; then
+    if grep -qhs 'keydirectory=' "$TMP/fstab_active" 2>/dev/null; then
+        ok "metadata encryption (FBEv2) declared with a key directory"
+    else
+        bad "metadata_encryption declared without keydirectory - the pinned recovery needs both"
+    fi
+    grep -qhs '^[^#]*[[:space:]]/metadata[[:space:]]' "$TMP/fstab_active" 2>/dev/null \
+        && ok "installed fstab has the /metadata partition" \
+        || bad "metadata encryption declared but no /metadata partition in the fstab"
+fi
+
 # --- QTI crypto chain presence (reported, not claimed) --------------------
 # The blobs are proprietary and are NOT in this repository. Their absence is
 # what made the audited handoff image unable to decrypt anything, so report it
