@@ -204,7 +204,7 @@ validated (`--check` fails on half-applied trees).
 
 ### BUG-17 — the theme could not be selected, killing the build inside Soong (HIGH, observed in CI)
 
-Four CI runs (`43724180838`, `43724709164`, `43726944108`, `43727215787`,
+Five CI runs (`43724180838`, `43724709164`, `43726944108`, `43727215787`,
 `43727418831`) stopped at the first Soong invocation with
 
 ```
