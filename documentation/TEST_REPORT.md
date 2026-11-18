@@ -27,12 +27,12 @@ the device configuration and **"Research only"** for runtime behaviour.
 
 ## 1b. Static checks executed for the current tree (no build)
 
-Run on the committed tree; re-runnable anywhere with `python3` and `bash`:
+Run on the committed tree; re-runnable anywhere with `python3` and `bash`. The checks below (except the historical blob-availability note) were **re-executed on the current tree in this audit session** with the results shown:
 
 ```bash
-python3 tools/static_checks.py
-bash -n build/*.sh
-./build/check_crypto_blobs.sh
+python3 tools/static_checks.py   # PASS (50 checks), expected WARN: 0/20 proprietary blobs present
+bash -n build/*.sh               # PASS (11 scripts)
+python3 -m unittest discover -s tests -v   # PASS (18 tests, synthetic fixtures)
 ```
 
 | Check | Result |
@@ -111,7 +111,7 @@ from `META-INF/debug/fox_build_vars.txt` in the official ZIP.
 | External storage | `/sdcard1`, `/external_sd` | preserved | untested |
 | Backup / restore | `OF_QUICK_BACKUP_LIST` | preserved | untested |
 | Partition mount/format | ext4 + emmc | + f2fs | untested |
-| Encryption | FDE footer only (`OF_SKIP_FBE_DECRYPTION=1`) | FDE **and** FBE attempted | **unverified** |
+| Encryption | FDE footer only (`OF_SKIP_FBE_DECRYPTION=1`) | Source config declares FDE footer + FBE (`fileencryption=ice`) flags and TEE service wiring; no metadata encryption declared | **unverified** (0/20 blobs, no built image, no hardware test) |
 | Recovery logs | present | present | untested |
 | Reboot options | present | present | untested |
 | OTA-related | `OF_OTA_RES_DECRYPT`, MIUI OTA vars | preserved | untested |

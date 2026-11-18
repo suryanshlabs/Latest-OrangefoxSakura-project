@@ -53,17 +53,16 @@ flashed and no device was booted.
 
 * The QTI blobs are proprietary and are deliberately not committed. See
   `device/xiaomi/sakura/proprietary-files.txt` and `DEPENDENCIES.md` §4 for the
-  licence-safe extraction procedure.
+  licence-safe extraction procedure. **Current state:** `0/20` blobs extracted/installed in this workspace; no production recovery image has been built or hardware-tested here.
 * `build/check_crypto_blobs.sh` reports exactly which listed blobs are missing
   for the current tree, and with `--require` refuses to let a build proceed
-  (used by `build.sh`, `run-all.sh` and the workflow).
+  (used by `build.sh`, `run-all.sh` and the workflow) unless an explicit non-decryption opt-out is recorded.
 * `build/extract_blobs.sh` + `build/install_blobs.sh` make the chain
   reproducible from the user's own firmware, and `tools/check_init_services.py`
   verifies every service path, interpreter and library dependency in the built
-  ramdisk.
-* `build/verify_image.sh` prints `DECRYPTION: UNVERIFIED` whenever the chain is
-  absent from the built ramdisk, instead of implying that FBE works because a
-  flag exists.
+  ramdisk (and can require the crypto services when blobs are present).
+* `build/verify_image.sh` must report decryption status honestly (e.g. `DECRYPTION: UNVERIFIED` when the required chain is absent), instead of implying that FBE/FDE works because flags exist.
 * The fstab semicolon defect that turned
   `encryptable=footer;fileencryption=ice` into a single malformed token is
   fixed and guarded by `tools/static_checks.py`, so it cannot regress silently.
+* Source configuration now declares both `encryptable=footer` and `fileencryption=ice` (FBE without metadata encryption) with `TW_INCLUDE_CRYPTO`/`TW_INCLUDE_CRYPTO_FBE` and device-provided TEE init wiring; this is configuration intent only, not proof of working decryption. Metadata encryption remains unsupported/undeclared.

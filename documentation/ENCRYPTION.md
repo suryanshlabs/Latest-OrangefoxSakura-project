@@ -1,151 +1,69 @@
-# Encryption analysis
+# Encryption analysis (current source configuration)
 
-This is the hardest requirement in the brief and the one most likely to be
-over-claimed. Everything here is derived from the R11 artifact, the two kernel
-binaries, and the device trees. **No decryption has been tested on hardware.**
+This document describes the **current** sakura OrangeFox R12.0 (`fox_12.1`) source configuration, what it is intended to handle, and what remains unverified. **No recovery image from this tree has been built here, no hardware boot has been performed, and no decryption has been tested on a device.**
 
-## 1. What R11.0_5 actually implemented
+## 1. Encryption types (kept distinct)
 
-From the unpacked ramdisk (`REFERENCE_R11_ANALYSIS.md` §4):
-
-```
-/data  ext4  /dev/block/bootdevice/by-name/userdata  encryptable=footer;length=-16384
-```
-
-and `OF_SKIP_FBE_DECRYPTION="1"`.
-
-That is **legacy full-disk encryption (FDE)** using a footer:
-`encryptable=footer` means dm-crypt with a 16 KiB crypto footer
-(`length=-16384`), key derived from the user's PIN/password/pattern via
-`gatekeeper` + the Qualcomm keymaster, with the disk key wrapped by
-`libcryptfs_hw` / `libcryptfsfde` talking to QSEECom.
-
-Crypto components shipped in `/sbin`: `libcryptfsfde.so`, `libcryptfs_hw.so`,
-`libe4crypt.so`, `libgatekeeper.so`, `libkeymaster_messages/portable/4support`,
-`libkeystore_binder/aidl`, `libsoftkeymasterdevice.so`, `libQSEEComAPI.so`,
-`openaes`, `keystore`, `keystore_auth`, `qseecomd`, `prepdecrypt.sh`, plus HIDL
-services `keymaster@3.0-service-qti` and `gatekeeper@1.0-service-qti`.
-
-The bring-up sequence in `init.recovery.qcom.rc`:
-
-```
-start prepdecrypt, sbinqseecomd, hwservicemanager, boot-1-0
-on property:fde.ready=1     -> start keymaster-3-0
-on property:crypto.ready=1  -> start sbinqseecomd + keymaster-3-0 + gatekeeper-1-0 + servicemanager
-```
-
-So R11 = **QSEECom + Keymaster 3.0 + Gatekeeper 1.0 + dm-crypt footer (FDE)**.
-There is no fscrypt, no ICE-based file encryption, no metadata encryption, and
-no KeyMint anywhere in the R11 image. This matches the stock kernel, which has
-**dm-crypt but no `fscrypt`**.
-
-## 2. The kernel constraint (measured)
-
-| Requirement | stock 3.18.120 | 4.9.278 (ofx-12.1) | Consequence |
+| Mechanism | What it is | How it appears in this tree | Status |
 |---|---|---|---|
-| dm-crypt (FDE) | yes | yes | legacy FDE is possible on both |
-| **fscrypt (FBE)** | **no** | **yes** | **FBE impossible on the stock kernel** |
-| ICE / inline crypto | yes | yes | hardware key handling for FBE available |
-| dm-default-key | no | no | **metadata encryption not supportable** |
-| keymaster 4.0 / KeyMint | n/a (vendor HAL) | vendor HAL is 3.0 | storage-key based metadata encryption unavailable |
+| **FDE (Full-Disk Encryption, legacy)** | Block-device encryption (dm-crypt) for `/data` using a crypto footer. User credential is verified via Gatekeeper/Keymaster to unwrap the disk key. | `encryptable=footer` is present as a separate fs_mgr flag token on both `/data` rows in `device/xiaomi/sakura/recovery/root/system/etc/recovery.fstab`. This matches the legacy footer/FDE model used by sakura Android 9 stock. | **Configured/intended** for FDE-capable ROM layouts; **not build-tested and not hardware-tested**. |
+| **FBE (File-Based Encryption)** | Per-file/per-directory encryption (fscrypt) on `/data`. File keys are protected by Keymaster/Gatekeeper-backed credentials (credential-encrypted keys) and/or device-encrypted state depending on ROM. Inline crypto/ICE may be used by the kernel/hardware. | `fileencryption=ice` is present as a separate fs_mgr flag token on both `/data` rows. `TW_INCLUDE_CRYPTO := true` and `TW_INCLUDE_CRYPTO_FBE := true` are set in `device/xiaomi/sakura/BoardConfig.mk`. The 4.9 prebuilt kernel is used (not R11's stock 3.18) because fscrypt/f2fs support is required for FBE scenarios (see measured kernel analysis in repo history/docs). No `metadata_encryption=` and no `keydirectory=` flags are declared for `/data`. | **Configured/intended** for **FBE without metadata encryption** only; **not build-tested and not hardware-tested**. |
+| **Metadata encryption** | A separate encryption layer for filesystem metadata (commonly `metadata_encryption=` / `dm-default-key`, often with a `keydirectory=` path and storage-key support in Keymaster/KeyMint). Not the same thing as `fileencryption=...`. | **Not declared** in `recovery.fstab` or `twrp.flags`. `BOARD_USES_METADATA_PARTITION := false`. | **Unsupported** for sakura with the available vendor/kernel constraints documented below. Do not claim support. |
 
-The device's vendor partition is Android 9, VNDK 28, with
-`OF_DEFAULT_KEYMASTER_VERSION := 3.0` in the community R12 tree and
-`android.hardware.keymaster@4.0.so` present only as a *library* (R11) — no
-Keymaster 4.0 service, no KeyMint, no `weaver` service binding.
+## 2. Current source configuration (actual)
 
-## 3. What each Android generation means
+- **`/data` fstab entries** (`device/xiaomi/sakura/recovery/root/system/etc/recovery.fstab`): two rows (f2fs first, ext4 second), both with fs_mgr flags
+  `wait,check,encryptable=footer,fileencryption=ice,quota,formattable` (comma-separated). No `metadata_encryption=`, no `keydirectory=`.
+- **Crypto build flags** (`device/xiaomi/sakura/BoardConfig.mk`): `TW_INCLUDE_CRYPTO := true`, `TW_INCLUDE_CRYPTO_FBE := true`, `BOARD_USES_METADATA_PARTITION := false`. Dead/unused variables `BOARD_USES_QCOM_FBE_DECRYPTION` and `TW_INCLUDE_FBE` are not used.
+- **TEE/init integration** (`device/xiaomi/sakura/recovery/root/init.recovery.qcom.rc`, `device/xiaomi/sakura/recovery/root/init.recovery.qcom_decrypt.rc`, `device/xiaomi/sakura/device.mk`): device-provided init fragments are installed into the recovery ramdisk via `PRODUCT_COPY_FILES`; `init.recovery.qcom.rc` imports `/init.recovery.qcom_decrypt.rc`. The decryption rc starts the vendor TEE chain in order: `qseecomd` → QTI Keymaster 3.0 service → QTI Gatekeeper 1.0 service (exec paths and destinations are defined by the device tree/manifest; `tools/check_init_services.py` enforces path/manifest consistency). This tree does **not** use nonexistent upstream `qcom_decrypt` / `qcom_decrypt_fbe` product modules.
+- **Vendor blobs** (`device/xiaomi/sakura/proprietary-files.txt`, `build/extract_blobs.sh`, `build/install_blobs.sh`, `build/check_crypto_blobs.sh`): proprietary TEE/HAL blobs are **not** committed. `0/20` are currently present in this workspace. Extraction is designed to be read-only from a user-supplied sakura Android 9 **fastboot** ROM and to record provenance/hashes locally under gitignored `vendor_blobs/`; installation generates a gitignored `blob_install.mk`. Without the required blobs, crypto-gated builds are refused by default (`build/check_crypto_blobs.sh --require`); `SAKURA_ALLOW_MISSING_CRYPTO=1` is an explicit non-decryption opt-out only.
+- **Boot/kernel/partitions**: unchanged by this documentation audit (no boot parameters, kernel, DTB, addresses, bootdevice command line, or partition size modified).
 
-| Android | Typical `/data` crypto on sakura | Reachable by an R12 build? |
+## 3. `fileencryption=ice` and fs_mgr flag parsing (pinned recovery implementation)
+
+**What was verified (source/config evidence):**
+- The recovery fstab uses **comma-separated** fs_mgr flags: `encryptable=footer,fileencryption=ice,quota,formattable` on both `/data` rows. Repository checks enforce comma separation and reject `;` (`tools/static_checks.py`, and `build/verify_image.sh` for built images).
+- Against the pinned OrangeFox recovery source used by this project, **`bootable/recovery` @ `8d2aad19deb158e935d70ca5b648162c2b2831ee`** (`fox_12.1`), `partition.cpp` defines and parses `fileencryption=` as `TWFLAG_FILEENCRYPTION` and `encryptable=` as `TWFLAG_ENCRYPTABLE` (e.g. flag table entries for `encryptable=` / `fileencryption=` and handling that recognizes `fileencryption=...` values such as `ice` forms). This confirms the pinned recovery partition parser recognizes the `fileencryption=` flag token used in the device fstab.
+
+**What this means / does not mean:**
+- The fstab flag syntax and tokenization are consistent with the pinned recovery parser and the project's static gates. This is **not** proof that FBE decryption will succeed on any ROM or device.
+- `fileencryption=ice` is the inline-crypto/ICE FBE indicator commonly used for Qualcomm legacy devices in recovery fstabs. Its exact runtime behavior depends on the pinned recovery/crypto code paths, installed vendor blobs, kernel crypto/fscrypt/ICE support, and the actual on-disk encryption state of `/data`. No runtime claim is made here.
+
+## 4. Intended TEE / crypto integration (not runtime-proven)
+
+The intended decryption stack for sakura is:
+- **Kernel/platform basis:** 4.9 prebuilt kernel (fscrypt/f2fs capability as documented by project analysis) instead of R11's 3.18 stock kernel; Qualcomm TEE channel `/dev/qseecom`.
+- **TEE userspace:** `qseecomd`.
+- **HALs:** QTI **Keymaster 3.0** service (`android.hardware.keymaster@3.0-service-qti`) and QTI **Gatekeeper 1.0** service (`android.hardware.gatekeeper@1.0-service-qti`) with their required vendor libraries, as listed in `device/xiaomi/sakura/proprietary-files.txt`.
+- **Recovery crypto build features:** `TW_INCLUDE_CRYPTO` and `TW_INCLUDE_CRYPTO_FBE` (OrangeFox/TWRP recovery crypto implementation in the pinned upstream trees).
+
+**Runtime compatibility is unverified.** Required proprietary blobs are not present in this workspace (`0/20` extracted/installed), no production recovery image has been built/verified here, and no device testing has been performed. Do not claim Keymaster/Gatekeeper/QSEECom runtime compatibility, successful service startup, or decryption without genuine firmware blobs and on-device evidence.
+
+## 5. Intended / unsupported / unknown configurations
+
+| Android / ROM encryption configuration | Intended by current config? | Notes |
 |---|---|---|
-| 9 (MIUI 12 stock, crDroid 7 era) | **FDE footer** (or unencrypted) | Yes — same mechanism as R11 |
-| 10 | FBE (ICE), often **with metadata encryption** | FBE credential-encrypted only; metadata encryption **no** |
-| 11 (crDroid 7.9, last official) | FBE + metadata | as above |
-| 12 / 13 | FBE + metadata, keymaster 4.0 in ROM (not vendor) | as above |
-| 14 / 15 (LineageOS 22.x) | FBE + metadata, ROM enforces encryption | as above; upstream maintainer says "FBE build, don't use twrp" |
-| 16 / 17 | identical crypto model to 15 | no ROM exists for sakura (see `ANDROID_COMPATIBILITY.md`) |
+| **Android 9 (sakura stock era, e.g. MIUI 12 PD* builds), unencrypted `/data`** | Yes (mount/use) | Depends on normal mount/format behavior; not a decryption case. |
+| **Android 9 legacy FDE (`encryptable=footer`)** | **Intended** | FDE footer flag present; same general mechanism family as R11. Requires correct TEE stack/blobs and device validation. **Unverified.** |
+| **Android 10+ FBE without metadata encryption** (`fileencryption=ice`, fscrypt/ICE-capable kernel/ROM layout) | **Intended (best-effort target)** | FBE flag and FBE crypto build flags are configured; metadata encryption not declared. Requires correct blobs, compatible ROM/key state, and device validation. **Unverified.** |
+| **FBE with metadata encryption** (`metadata_encryption=`, dm-default-key, etc.) | **No (unsupported)** | Not declared/configured. Sakura vendor/kernel constraints (KM 3.0 vendor, no dm-default-key support in the kernels relied on by this port) make this unsupported here. Do not advertise support. |
+| **Other/unknown encryption combinations** (e.g. ROM-specific wrapped-key/metadata variants, adoptable-storage-specific cases, future formats) | **Unknown** | Treat as unsupported until analyzed and device-tested with evidence. |
+| **Android 16 / 17 on sakura** | **Unknown / not applicable** | No sakura ROM/device-tree evidence established in this project for those releases; compatibility cannot be claimed. |
 
-Three separate mechanisms must not be conflated:
+## 6. Verification status (executed checks only)
 
-1. **FDE** (`encryptable=footer`) — dm-crypt over the whole block device.
-   Supported by the port.
-2. **FBE** (`fileencryption=ice`) — per-file keys, `/data` has
-   `keydirectory=`; needs kernel `fscrypt` + ICE + keymaster/gatekeeper to
-   unwrap keys. Supported **only** with the 4.9 kernel; unverified on device.
-3. **Metadata encryption** (`metadata_encryption=` / `dm-default-key`) — needs
-   a keymaster that can derive a storage key (KM 4.0/KeyMint) and kernel
-   `dm-default-key`. **Not supported by either available kernel**, therefore
-   out of scope for any single sakura R12 build.
+| Item | Status (current) | Evidence |
+|---|---|---|
+| Source fstab/config consistency (comma-separated `encryptable=footer,fileencryption=ice`, no metadata encryption declared, crypto flags/init wiring/static structure) | **PASS (static/config checks executed)** | `python3 tools/static_checks.py` → **PASS (50 checks)** on this tree in this workspace; expected warning: `0/20` proprietary blobs present, `DECRYPTION IS UNVERIFIED`. |
+| Tooling/unit regression tests (extraction/install/init/ELF/sparse helpers, committed device-tree checks) | **PASS (executed)** | `python3 -m unittest discover -s tests -v` → **Ran 18 tests, OK** in this workspace (synthetic fixtures; not a genuine firmware extraction). |
+| `fileencryption=ice` and `encryptable=` recognized by pinned recovery parser | **Verified by source inspection of pinned commit** | Checked `bootable/recovery@8d2aad19deb158e935d70ca5b648162c2b2831ee` (`partition.cpp`: `TWFLAG_FILEENCRYPTION` / `TWFLAG_ENCRYPTABLE` parsing). Runtime behavior not verified. |
+| Genuine firmware blob extraction/integration | **Not completed** | No genuine sakura Android 9 fastboot ROM available in this environment; `0/20` blobs extracted/installed. |
+| Blob-dependent crypto gates with real blobs (`check_crypto_blobs.sh --require`, `check_init_services.py --require crypto`) | **Not executed with real blobs** | Cannot run meaningfully until genuine blobs are extracted/installed. |
+| Production recovery image build and image verification | **Not done** | No compatible build host/image build performed. |
+| Boot, service startup, FDE/FBE decryption on hardware | **Not tested** | No device testing performed. |
 
-## 4. Honest conclusion
+## 7. Operational cautions
 
-A **single** R12.0 configuration cannot decrypt every Android 9–17 ROM on this
-hardware, and the blocker is architectural, not a build flag:
-
-* Metadata encryption requires `dm-default-key` (absent from both kernels we
-  can boot) and a KM4/KeyMint-backed storage key (the sakura vendor is KM3.0).
-  A 3.18/4.9 kernel cannot be given this without a kernel backport plus a
-  vendor HAL that does not exist on this device. Porting `dm-default-key` to
-  4.9 is conceivable but is a kernel research project with no guarantee, and
-  cannot be validated without hardware.
-* Therefore the achievable target is: **FDE (Android 9) + FBE without metadata
-  (Android 10+)**, using the 4.9 kernel and `qcom_decrypt` +
-  `qcom_decrypt_fbe`.
-
-### Least-disruptive strategy recommended
-
-1. Build **one** recovery using the 4.9 kernel with `qcom_decrypt` +
-   `qcom_decrypt_fbe` and a multi-fstype fstab (`/data` f2fs **and** ext4,
-   `fileencryption=ice`, `encryptable=footer` retained for FDE ROMs).
-2. **Do not** set `OF_FBE_METADATA_MOUNT_IGNORE` silently; instead document that
-   metadata-encrypted `/data` will mount only after "Format Data" or via
-   "Decrypt with PIN" where the ROM is FBE-only.
-3. If a specific ROM turns out to be metadata-encrypted only, the documented
-   fallback is: **mount `/data` as read-only / use `adb push`+sideload and
-   `Format Data`**, or boot the ROM once to remove encryption. That is the least
-   disruptive alternative to a second build variant.
-4. If two variants ever become necessary, they differ *only* in fstab/kernel
-   flags, not in the recovery UI — so they can be produced from the same tree by
-   a build-time switch (`FOX_SAKURA_LEGACY_FDE=1`), which is already stubbed in
-   `device/`.
-
-## 5. What must change vs R11
-
-| Component | R11.0_5 | R12.0 port | Why |
-|---|---|---|---|
-| `/data` fstab | ext4 + footer | f2fs **and** ext4, `fileencryption=ice`, keep `encryptable=footer` | support both FBE and legacy FDE |
-| `/system` | ext4, SAR auto-detect | `/system_root` entries in twrp.flags (as community tree) | modern ROMs are system-as-root |
-| kernel | 3.18.120 stock (no fscrypt) | 4.9.278 with fscrypt + f2fs | FBE requires it |
-| crypto implementation | libcryptfsfde + KM3 | `bootable/recovery`'s own crypto (`TW_INCLUDE_CRYPTO` + `TW_INCLUDE_CRYPTO_FBE`), KM3.0 HAL | the `qcom_decrypt` modules an earlier revision listed **do not exist** in the pinned trees |
-| TEE services | manual R11 bring-up | `recovery/root/init.recovery.qcom_decrypt.rc`: `qseecomd`, `vendor.keymaster-3-0`, `vendor.gatekeeper-1-0` at `/system/bin/...`, started `on boot` / on `init.svc.qseecomd=running` | nothing upstream declares these services |
-| metadata encryption | n/a | **not supported — documented** | no dm-default-key / KM4 |
-| keymaster version | 3.0 | 3.0 (`OF_DEFAULT_KEYMASTER_VERSION := 3.0`) | vendor reality |
-
-## 6. Verification status
-
-| Item | Status |
-|---|---|
-| fstab flags parse as separate tokens | **fixed + statically enforced** — comma-separated; `tools/static_checks.py` and `build/verify_image.sh` fail on `;` |
-| FDE footer decryption | **not tested** (no hardware); same mechanism as R11 |
-| FBE (ICE) decryption | **not tested**; kernel capability verified by string evidence only |
-| Metadata encryption | **not supportable** — proven absent from both kernels |
-| Keymaster 3.0 / Gatekeeper 1.0 / qseecomd present | **missing in the audited image** — see `IMAGE_AUDIT.md`; blobs are proprietary and not committed. Extraction is scripted (`DEPENDENCIES.md` §4) and gated (`build/check_crypto_blobs.sh --require`) |
-| init services resolvable (path, ELF machine, interpreter, transitive `DT_NEEDED`) | **statically enforced** by `tools/check_init_services.py`, on the device tree and on the built ramdisk |
-| Keymaster 3.0 service start in recovery | **not tested** (needs the device) |
-
-Consequence: with the QTI blobs absent, **no decryption capability is claimed
-for any image built from this tree**, and the build is refused unless the
-missing chain is an explicit, recorded choice (`SAKURA_ALLOW_MISSING_CRYPTO=1`).
-The fstab declares both mechanisms so a build that *does* include the extracted
-blobs can attempt them, and `build/check_crypto_blobs.sh` /
-`build/verify_image.sh` state that status plainly instead of inferring success
-from a flag.
-
-One further caution, learned from the audited image: FBE without a working
-gatekeeper/keymaster chain makes TWRP block on the splash instead of failing
-cleanly. If you build without the blobs and `/data` is FBE-encrypted, expect
-that behaviour; the documented workaround is `Format Data` (data loss) or
-building with `OF_SKIP_FBE_DECRYPTION=1` for that ROM generation.
-
-Never advertise decryption as working until `testing/android-*/` records a real
-`Decryption tested` result.
+- A configuration that declares FBE but lacks a working TEE/Keymaster/Gatekeeper chain can fail badly at runtime (e.g. recovery hanging at splash on encrypted `/data`). Do not infer working decryption from flags or from `keystore2` presence alone.
+- `SAKURA_ALLOW_MISSING_CRYPTO=1` / workflow opt-out produces (if built) an explicitly **non-decrypting** artifact choice; it must never be labeled or described as decryption-capable.
+- Never claim decryption works until a real build is produced, its image is verified, and on-device results are recorded in `testing/android-*/TEST_RECORD.md`.
